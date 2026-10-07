@@ -1,4 +1,4 @@
-package com.example.recognizer.ui.theme
+package dev.averyzhoux.recognizer.ui.theme
 
 import android.app.Activity
 import android.os.Build

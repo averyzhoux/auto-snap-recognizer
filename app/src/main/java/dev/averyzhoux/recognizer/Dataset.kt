@@ -1,4 +1,4 @@
-package com.example.recognizer
+package dev.averyzhoux.recognizer
 
 /**
  * 本地数据集的入口。

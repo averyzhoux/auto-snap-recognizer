@@ -3,18 +3,23 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// CI 从 tag 注入版本号（-PversionName=1.2.3 -PversionCode=10203）；
+// 本地不传就用默认值，方便直接 Run。
+val injectedVersionName = providers.gradleProperty("versionName").orNull
+val injectedVersionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull()
+
 android {
-    namespace = "com.example.recognizer"
+    namespace = "dev.averyzhoux.recognizer"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "com.example.recognizer"
+        applicationId = "dev.averyzhoux.recognizer"
         minSdk = 24
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = injectedVersionCode ?: 1
+        versionName = injectedVersionName ?: "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

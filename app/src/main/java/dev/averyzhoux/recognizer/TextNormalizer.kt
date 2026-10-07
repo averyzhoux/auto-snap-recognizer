@@ -1,4 +1,4 @@
-package com.example.recognizer
+package dev.averyzhoux.recognizer
 
 /**
  * 文本归一化：OCR 出来的文本和数据集里的文本，常常只是“长得像”而不是完全相同。

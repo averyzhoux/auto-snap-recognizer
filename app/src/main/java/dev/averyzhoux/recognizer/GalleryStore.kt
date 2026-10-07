@@ -1,4 +1,4 @@
-package com.example.recognizer
+package dev.averyzhoux.recognizer
 
 import android.content.Context
 import android.graphics.Bitmap

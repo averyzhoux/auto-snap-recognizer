@@ -1,4 +1,4 @@
-package com.example.recognizer
+package dev.averyzhoux.recognizer
 
 import android.Manifest
 import android.content.Context
@@ -46,18 +46,25 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -65,6 +72,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,13 +86,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.example.recognizer.ui.theme.RecognizerTheme
+import dev.averyzhoux.recognizer.ui.theme.RecognizerTheme
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import java.util.Date
 import java.io.File
@@ -127,7 +136,23 @@ private data class MatchResult(val matches: List<LineMatch>, val fromCache: Bool
 private const val THUMBNAIL_CACHE_SIZE = 12
 
 /** 当前显示哪一屏 */
-private enum class Screen { Camera, Gallery, Detail }
+private enum class Screen { Camera, Gallery, Detail, Datasets }
+
+/**
+ * 一次待确认的导入。
+ *
+ * 解析先做一遍用于**预览**（让用户当场看出格式对不对），确认后才落盘。
+ * 保留原始字节/文本，落盘时由 [DatasetStore] 再解析一遍——同一个解析器，
+ * 所以预览和最终存下来的内容一致。
+ */
+private class PendingImport(
+    val bytes: ByteArray?,
+    val text: String?,
+    val sourceFileName: String?,
+    val preview: ParseResult,
+    val encoding: String,
+    val suggestedName: String
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -157,7 +182,12 @@ sealed interface OcrStatus {
         val bitmap: Bitmap,
         val matches: List<LineMatch>,
         /** true = 这一帧跟上一帧几乎一样，直接复用了上次的比对结果 */
-        val fromCache: Boolean
+        val fromCache: Boolean,
+        /**
+         * true = OCR 引擎本身出错（区别于「识别成功但图里确实没字」）。
+         * 两种情况 matches 都是空的，但给用户的提示必须不同。
+         */
+        val ocrFailed: Boolean = false
     ) : OcrStatus {
         val hitCount: Int get() = matches.count { it.isHit }
     }
@@ -211,7 +241,10 @@ fun CameraOcrScreen() {
     val textRecognizer: TextRecognizer = remember {
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     }
-    val matcher = remember { OcrMatcher(Dataset.entries) }
+    // 匹配引擎放进一个 holder：切换数据集时替换 .value，
+    // 这样**正在跑的自动循环**捕获的是 holder 而不是旧的 matcher 实例，
+    // 下一次拍照立刻就用上新表格（否则要等循环重启才生效）。
+    val matcherHolder = remember { mutableStateOf(OcrMatcher(Dataset.entries)) }
     DisposableEffect(Unit) {
         onDispose {
             textRecognizer.close()
@@ -236,6 +269,15 @@ fun CameraOcrScreen() {
     // 手动模式下没有循环接应，所以这种情况直接忽略，不弹错误。
     var transientErrorAt by remember { mutableStateOf<Long?>(null) }
 
+    // ---------- 数据集 ----------
+    val datasetStore = remember { DatasetStore(context.applicationContext) }
+    val datasets = remember { mutableStateListOf<DatasetMeta>() }
+    var activeDataset by remember { mutableStateOf<DatasetMeta?>(null) }
+    // 从文件选择器/粘贴拿到的待确认导入
+    var pendingImport by remember { mutableStateOf<PendingImport?>(null) }
+    var pasteDialogOpen by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
     // 内部相册：元数据在内存、图片在磁盘
     val galleryStore = remember { GalleryStore(context.applicationContext) }
     // 已解码预览图的小缓存，只留最近看过的几张，避免整本相册都占内存。
@@ -249,6 +291,18 @@ fun CameraOcrScreen() {
     // 相册里正在看的那张（null = 没在看详情）
     var openedItem by remember { mutableStateOf<GalleryItem?>(null) }
 
+    // 启动时加载数据集：把当前激活的那个读进匹配引擎
+    LaunchedEffect(Unit) {
+        val (list, activeId, entries) = withContext(Dispatchers.IO) {
+            Triple(datasetStore.list(), datasetStore.activeId(), datasetStore.entriesOf(datasetStore.activeId()))
+        }
+        datasets.clear()
+        datasets.addAll(list)
+        activeDataset = list.firstOrNull { it.id == activeId } ?: list.first()
+        matcherHolder.value = OcrMatcher(entries)
+        Log.d(TAG, "dataset loaded: '${activeDataset?.name}' ${entries.size} entries")
+    }
+
     // 启动时把磁盘上已有的相册读进来（只读 JSON，不解码图片）
     LaunchedEffect(Unit) {
         val loaded = withContext(Dispatchers.IO) { galleryStore.loadAll() }
@@ -257,7 +311,78 @@ fun CameraOcrScreen() {
         Log.d(TAG, "gallery loaded ${loaded.size} items from disk")
     }
 
-    // 抽成函数，给自动循环和手动按钮共用
+    // ---------- 数据集：切换 / 导入 ----------
+
+    // 切换当前数据集：重建匹配引擎，并清掉帧缓存（否则会拿旧表格的结果复用）
+    val switchDataset: (DatasetMeta) -> Unit = { meta ->
+        scope.launch {
+            val entries = withContext(Dispatchers.IO) {
+                datasetStore.setActive(meta.id)
+                datasetStore.entriesOf(meta.id)
+            }
+            matcherHolder.value = OcrMatcher(entries)
+            activeDataset = meta
+            lastSignature = null
+            lastMatches = null
+            Log.d(TAG, "switched to dataset '${meta.name}' (${entries.size} entries)")
+        }
+    }
+
+    // 确认导入：落盘 -> 刷新列表 -> 直接切过去用
+    val confirmImport: (PendingImport, String) -> Unit = { pending, name ->
+        scope.launch {
+            val meta = withContext(Dispatchers.IO) {
+                if (pending.bytes != null) {
+                    datasetStore.importBytes(pending.bytes, pending.sourceFileName, name)
+                } else {
+                    datasetStore.importText(pending.text.orEmpty(), name)
+                }
+            }
+            if (meta == null) {
+                Log.w(TAG, "import produced no entries, ignored")
+            } else {
+                val refreshed = withContext(Dispatchers.IO) { datasetStore.list() }
+                datasets.clear()
+                datasets.addAll(refreshed)
+                switchDataset(meta)
+            }
+            pendingImport = null
+        }
+    }
+
+    // 文件选择器：不限制 mime，各家文件管理器对 csv 的 mime 判定不一致，
+    // 限太死会导致用户的文件是灰的选不中。
+    val filePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val loaded = withContext(Dispatchers.IO) {
+                val bytes = runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                }.getOrNull()
+                val name = queryDisplayName(context, uri)
+                bytes?.let { it to name }
+            }
+            if (loaded == null) {
+                Log.w(TAG, "无法读取所选文件")
+            } else {
+                val (bytes, fileName) = loaded
+                val (text, encoding) = DatasetParser.decodeText(bytes)
+                pendingImport = PendingImport(
+                    bytes = bytes,
+                    text = null,
+                    sourceFileName = fileName,
+                    preview = DatasetParser.parse(text),
+                    encoding = encoding,
+                    suggestedName = fileName?.substringBeforeLast('.')?.takeIf { it.isNotBlank() }
+                        ?: "导入的数据集"
+                )
+            }
+        }
+    }
+
+        // 抽成函数，给自动循环和手动按钮共用
     val takePicture: (ImageCapture) -> Unit = { useCase ->
         busy.set(true)
         useCase.takePicture(
@@ -297,10 +422,19 @@ fun CameraOcrScreen() {
                             busy.set(false)
                         } else {
                             status = OcrStatus.Recognizing(thumb, cached)
-                            recognize(textRecognizer, matcher, bitmap, rotationDegrees) { lines, result ->
-                                lastSignature = signature
-                                lastMatches = result
-                                status = OcrStatus.Recognized(thumb, result, fromCache = false)
+                            recognize(textRecognizer, matcherHolder.value, bitmap, rotationDegrees) { lines, result, ocrFailed ->
+                                // 失败时**不能**写 lastSignature / lastMatches：
+                                // 否则画面不变时会一直复用这份空结果，永远不再重试 OCR。
+                                if (!ocrFailed) {
+                                    lastSignature = signature
+                                    lastMatches = result
+                                }
+                                status = OcrStatus.Recognized(
+                                    bitmap = thumb,
+                                    matches = result,
+                                    fromCache = false,
+                                    ocrFailed = ocrFailed
+                                )
                                 saveToGallery(
                                     store = galleryStore,
                                     gallery = gallery,
@@ -363,6 +497,8 @@ fun CameraOcrScreen() {
         // 命中的排前面，避免一堆未命中的噪声把结果淹掉（sortedBy 是稳定排序）
         matches.sortedByDescending { it.isHit }
     }
+    // OCR 引擎出错时，空结果不能提示成「没识别到文字」
+    val ocrFailed = (status as? OcrStatus.Recognized)?.ocrFailed == true
     // 小米相机式布局：整屏取景，控件浮在上面
     //   顶部：状态胶囊
     //   底部：模式文字 + 左侧缩略图 + 右侧大快门
@@ -374,20 +510,38 @@ fun CameraOcrScreen() {
             modifier = Modifier.fillMaxSize()
         )
 
-        // 顶部状态胶囊（保留状态栏，只做状态栏避让）
-        Box(
+        // 顶部一行：命中情况在左，数据集入口在右。
+        //
+        // 状态胶囊放在一个 weight(1f) 的 Box 里、**靠左**对齐：
+        //   - Box 拿到「左边缘 → 数据集胶囊」这整块区域（数据集胶囊不被压缩）
+        //   - 胶囊**宽度随文字伸缩**（最小就是文字本身的宽度）
+        //   - 超过区域宽度时文字省略
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier
                 .align(Alignment.TopCenter)
+                .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.statusBars)
                 .padding(top = 12.dp, start = 16.dp, end = 16.dp)
         ) {
-            StatusBanner(status = status)
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                StatusBanner(status = status)
+            }
+            DatasetChip(
+                dataset = activeDataset,
+                onClick = { screen = Screen.Datasets }
+            )
         }
 
         // 比对结果面板：浮在快门栏上方
         if (displayMatches != null) {
             ResultPanel(
                 matches = displayMatches,
+                ocrFailed = ocrFailed,
                 autoMode = autoMode,
                 onRetake = {
                     status = OcrStatus.Idle
@@ -463,6 +617,34 @@ fun CameraOcrScreen() {
             )
         }
 
+        // 粘贴导入
+        if (pasteDialogOpen) {
+            PasteDialog(
+                onDismiss = { pasteDialogOpen = false },
+                onConfirm = { text, name ->
+                    pasteDialogOpen = false
+                    val parsed = DatasetParser.parse(text)
+                    pendingImport = PendingImport(
+                        bytes = null,
+                        text = text,
+                        sourceFileName = null,
+                        preview = parsed,
+                        encoding = "UTF-8",
+                        suggestedName = name.ifBlank { "粘贴的数据集" }
+                    )
+                }
+            )
+        }
+
+        // 导入预览确认
+        pendingImport?.let { pending ->
+            ImportPreviewDialog(
+                pending = pending,
+                onDismiss = { pendingImport = null },
+                onConfirm = { name -> confirmImport(pending, name) }
+            )
+        }
+
         // 相册 / 照片详情：盖住取景画面
         when (screen) {
             Screen.Camera -> Unit
@@ -482,6 +664,31 @@ fun CameraOcrScreen() {
                     gallery.clear()
                     openedItem = null
                 },
+                modifier = Modifier.fillMaxSize()
+            )
+
+            Screen.Datasets -> DatasetScreen(
+                datasets = datasets,
+                activeId = activeDataset?.id ?: DatasetStore.BUILT_IN_ID,
+                onBack = { screen = Screen.Camera },
+                onSelect = { meta ->
+                    switchDataset(meta)
+                    screen = Screen.Camera
+                },
+                onDelete = { meta ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) { datasetStore.delete(meta.id) }
+                        val refreshed = withContext(Dispatchers.IO) { datasetStore.list() }
+                        datasets.clear()
+                        datasets.addAll(refreshed)
+                        // 删掉的正是当前用的，回落到内置
+                        if (activeDataset?.id == meta.id) {
+                            refreshed.firstOrNull()?.let { switchDataset(it) }
+                        }
+                    }
+                },
+                onPickFile = { filePicker.launch(arrayOf("*/*")) },
+                onPaste = { pasteDialogOpen = true },
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -552,7 +759,7 @@ private fun recognize(
     matcher: OcrMatcher,
     bitmap: Bitmap,
     rotationDegrees: Int,
-    onResult: (lines: List<String>, matches: List<LineMatch>) -> Unit
+    onResult: (lines: List<String>, matches: List<LineMatch>, ocrFailed: Boolean) -> Unit
 ) {
     // 第二个参数就是旋转角度，交给 ML Kit 摆正
     val inputImage = InputImage.fromBitmap(bitmap, rotationDegrees)
@@ -577,12 +784,11 @@ private fun recognize(
                 )
             }
 
-            onResult(lines, matches)
+            onResult(lines, matches, false)
         }
         .addOnFailureListener { error ->
             Log.e(TAG, "OCR failed", error)
-            // 识别失败不算致命：自动模式下下一帧会重试，这里保留上一批结果
-            onResult(emptyList(), emptyList())
+            onResult(emptyList(), emptyList(), true)
         }
 }
 
@@ -1107,6 +1313,392 @@ private fun GalleryDetailScreen(
     }
 }
 
+/**
+ * 顶部右侧的数据集入口。
+ *
+ * 必须一直显示「当前用的是哪个表格」——否则识别结果不对时，
+ * 你会以为是识别错了，其实是数据集没切。
+ */
+@Composable
+private fun DatasetChip(
+    dataset: DatasetMeta?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val name = dataset?.name ?: "加载中…"
+    val count = dataset?.entryCount ?: 0
+    Surface(
+        color = Color.Black.copy(alpha = 0.6f),
+        shape = RoundedCornerShape(50),
+        modifier = modifier.clickable(onClick = onClick)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            Text(
+                text = name,
+                color = Color.White,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 120.dp)
+            )
+            Text(
+                text = "$count ›",
+                color = XiaomiYellow,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/** 数据集入口那一行。 */
+@Composable
+private fun DatasetRow(
+    meta: DatasetMeta,
+    active: Boolean,
+    onSelect: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = if (active) XiaomiYellow.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.06f),
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable(onClick = onSelect)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = meta.name,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (meta.builtIn) {
+                        Text(
+                            text = "  内置",
+                            color = Color.White.copy(alpha = 0.45f),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                }
+                Text(
+                    text = buildString {
+                        append("${meta.entryCount} 项 · ${meta.encoding}")
+                        if (!meta.builtIn) {
+                            append(" · ")
+                            append(SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(meta.importedAt)))
+                        }
+                        meta.sourceFileName?.let { append(" · $it") }
+                    },
+                    color = Color.White.copy(alpha = 0.5f),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+
+            if (active) {
+                Text(
+                    text = "✓ 使用中",
+                    color = XiaomiYellow,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+
+            // 内置的不允许删
+            if (!meta.builtIn) {
+                Text(
+                    text = "删除",
+                    color = Color.White.copy(alpha = 0.55f),
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .padding(start = 10.dp)
+                        .clip(RoundedCornerShape(50))
+                        .clickable(onClick = onDelete)
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                )
+            }
+        }
+    }
+}
+
+/** 数据集管理页：列出全部数据集，并提供两个导入入口。 */
+@Composable
+private fun DatasetScreen(
+    datasets: List<DatasetMeta>,
+    activeId: Int,
+    onBack: () -> Unit,
+    onSelect: (DatasetMeta) -> Unit,
+    onDelete: (DatasetMeta) -> Unit,
+    onPickFile: () -> Unit,
+    onPaste: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    BackHandler(onBack = onBack)
+
+    Surface(color = Color(0xFF101012), modifier = modifier) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+            ) {
+                Text(
+                    text = "‹ 返回",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable(onClick = onBack)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = "数据集（表格）",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                // 占位，让标题居中
+                Text(
+                    text = "      ",
+                    style = MaterialTheme.typography.titleSmall
+                )
+            }
+
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                item {
+                    Text(
+                        text = "识别结果会跟「使用中」的这张表格逐项比对。" +
+                            "每行一个关键词；一行里有逗号时，第一个是名称、其余当别名。",
+                        color = Color.White.copy(alpha = 0.5f),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
+                items(datasets, key = { it.id }) { meta ->
+                    DatasetRow(
+                        meta = meta,
+                        active = meta.id == activeId,
+                        onSelect = { onSelect(meta) },
+                        onDelete = { onDelete(meta) }
+                    )
+                }
+            }
+
+            // 两个导入入口
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(horizontal = 16.dp)
+                    .padding(top = 12.dp, bottom = 16.dp)
+            ) {
+                Button(
+                    onClick = onPickFile,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("选文件导入")
+                }
+                OutlinedButton(
+                    onClick = onPaste,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("粘贴导入")
+                }
+            }
+        }
+    }
+}
+
+/** 粘贴文本导入。 */
+@Composable
+private fun PasteDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (text: String, name: String) -> Unit
+) {
+    var text by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("粘贴导入") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("每行一个关键词") },
+                    placeholder = { Text("Serial Number\nModel\nManufacturer, Mfg") },
+                    minLines = 6,
+                    maxLines = 10,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("数据集名称") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp)
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(text, name) },
+                enabled = text.isNotBlank()
+            ) {
+                Text("预览")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+/**
+ * 导入预览确认。
+ *
+ * 这一步不能省：格式不对（分隔符、编码、列数）要在这里就能看出来，
+ * 否则导入一堆垃圾数据还以为是自己拍错了。
+ */
+@Composable
+private fun ImportPreviewDialog(
+    pending: PendingImport,
+    onDismiss: () -> Unit,
+    onConfirm: (name: String) -> Unit
+) {
+    var name by remember { mutableStateOf(pending.suggestedName) }
+    val preview = pending.preview
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("确认导入") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = buildString {
+                        append("解析出 ")
+                        append(preview.entries.size)
+                        append(" 项")
+                        append("（共 ")
+                        append(preview.totalLines)
+                        append(" 行，编码 ")
+                        append(pending.encoding)
+                        append("）")
+                    },
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                if (preview.skippedLines.isNotEmpty()) {
+                    Text(
+                        text = "跳过了 ${preview.skippedLines.size} 行（空行 / 注释 / 重复项）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFFB26A00),
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+
+                if (preview.entries.isEmpty()) {
+                    Text(
+                        text = "没有解析出任何条目，请检查文件内容",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color(0xFFC62828),
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                } else {
+                    Text(
+                        text = "前几项预览：",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+                    preview.entries.take(8).forEach { entry ->
+                        Text(
+                            text = buildString {
+                                append("· ")
+                                append(entry.name)
+                                if (entry.aliases.isNotEmpty()) {
+                                    append("   （别名：")
+                                    append(entry.aliases.joinToString(" / "))
+                                    append("）")
+                                }
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.75f),
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    if (preview.entries.size > 8) {
+                        Text(
+                            text = "…… 还有 ${preview.entries.size - 8} 项",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.45f),
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("数据集名称") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp)
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(name) },
+                enabled = preview.entries.isNotEmpty()
+            ) {
+                Text("导入并使用")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+/** 从 content Uri 里取显示用的文件名。 */
+private fun queryDisplayName(context: Context, uri: android.net.Uri): String? = runCatching {
+    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+        if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+    }
+}.getOrNull()
+
 /** 顶部状态胶囊。 */
 @Composable
 private fun StatusBanner(status: OcrStatus, modifier: Modifier = Modifier) {
@@ -1118,11 +1710,14 @@ private fun StatusBanner(status: OcrStatus, modifier: Modifier = Modifier) {
             else "命中 ${cached.count { it.isHit }} / ${cached.size}（更新中…）"
         }
         is OcrStatus.Recognized -> when {
+            // 引擎出错和「图里没字」是两回事，提示必须分开
+            status.ocrFailed -> "OCR 识别失败"
             status.matches.isEmpty() -> "没识别到文字"
             status.hitCount > 0 ->
                 "命中 ${status.hitCount} / ${status.matches.size}" +
-                    if (status.fromCache) "（画面未变化）" else ""
-            else -> "识别到 ${status.matches.size} 行，但都没命中表格"
+                    if (status.fromCache) "（画面未变）" else ""
+            // 刻意写短：胶囊越窄，顶部越不容易挤
+            else -> "无命中 · ${status.matches.size} 行"
         }
         is OcrStatus.Failed -> "失败：${status.message}"
     }
@@ -1146,7 +1741,10 @@ private fun StatusBanner(status: OcrStatus, modifier: Modifier = Modifier) {
             Text(
                 text = text,
                 color = Color.White,
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium,
+                // 被 Row 的 weight 压缩时省略，而不是溢出盖住右侧的数据集胶囊
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -1158,6 +1756,7 @@ private fun StatusBanner(status: OcrStatus, modifier: Modifier = Modifier) {
 @Composable
 private fun ResultPanel(
     matches: List<LineMatch>,
+    ocrFailed: Boolean,
     autoMode: Boolean,
     onRetake: () -> Unit,
     modifier: Modifier = Modifier
@@ -1197,7 +1796,11 @@ private fun ResultPanel(
 
             if (matches.isEmpty()) {
                 Text(
-                    text = "没有识别到文字，试试靠近一点、让文字占满画面",
+                    text = if (ocrFailed) {
+                        "OCR 识别失败，请重试"
+                    } else {
+                        "没有识别到文字，试试靠近一点、让文字占满画面"
+                    },
                     color = Color.White.copy(alpha = 0.7f),
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = 8.dp)

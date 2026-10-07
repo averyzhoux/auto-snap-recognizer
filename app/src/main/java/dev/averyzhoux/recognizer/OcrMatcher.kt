@@ -1,4 +1,4 @@
-package com.example.recognizer
+package dev.averyzhoux.recognizer
 
 /** 表格里的一行。 */
 data class Entry(

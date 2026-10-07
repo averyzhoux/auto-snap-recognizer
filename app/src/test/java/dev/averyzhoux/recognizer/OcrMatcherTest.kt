@@ -1,4 +1,4 @@
-package com.example.recognizer
+package dev.averyzhoux.recognizer
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
