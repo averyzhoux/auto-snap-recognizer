@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>隐私说明 — Auto Snap Recognizer</title>
+<meta name="description" content="Auto Snap Recognizer 不联网、不采集、不上传任何数据：照片、识别结果和表格全部只存在你的手机上。">
+<meta name="theme-color" content="#0e0e10">
+<style>
+  :root {
+    --bg: #0e0e10;
+    --surface: #17171a;
+    --line: rgba(255, 255, 255, 0.10);
+    --text: #f2f2f4;
+    --dim: rgba(255, 255, 255, 0.62);
+    --dimmer: rgba(255, 255, 255, 0.40);
+    --accent: #ffc800;
+    --accent-dim: rgba(255, 200, 0, 0.14);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.75 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 0 22px; }
+
+  .topbar {
+    border-bottom: 1px solid var(--line);
+    background: rgba(14, 14, 16, 0.86); backdrop-filter: blur(12px);
+    position: sticky; top: 0;
+  }
+  .topbar .wrap { height: 58px; display: flex; align-items: center; }
+  .brand { font-weight: 700; }
+  .brand span { color: var(--accent); }
+  .topbar a.back { margin-left: auto; font-size: 14px; color: var(--dim); }
+  .topbar a.back:hover { color: var(--text); }
+
+  main { padding: 44px 0 20px; }
+  h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -.3px; }
+  .updated { color: var(--dimmer); font-size: 13.5px; margin: 0 0 30px; }
+  h2 { font-size: 19px; margin: 34px 0 10px; }
+  p { margin: 0 0 14px; color: var(--dim); }
+  strong { color: var(--text); }
+  ul { padding-left: 22px; margin: 0 0 16px; color: var(--dim); }
+  li { margin: 6px 0; }
+  li::marker { color: var(--dimmer); }
+  code {
+    background: #1f1f24; border-radius: 5px; padding: 1px 6px; font-size: 13.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #e6e6ea;
+  }
+  .note {
+    border-left: 3px solid var(--accent); background: var(--accent-dim);
+    border-radius: 0 12px 12px 0; padding: 16px 20px; margin: 0 0 26px;
+  }
+  .note p { color: var(--text); margin: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; margin: 0 0 18px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; font-size: 13px; white-space: nowrap; }
+  td { color: var(--dim); }
+  footer {
+    border-top: 1px solid var(--line); margin-top: 30px;
+    padding: 26px 0 46px; color: var(--dimmer); font-size: 13.5px;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="wrap">
+    <div class="brand">Auto Snap <span>Recognizer</span></div>
+    <a class="back" href="index.html">← 返回首页</a>
+  </div>
+</div>
+
+<main class="wrap">
+  <h1>隐私说明</h1>
+  <p class="updated">最后更新：2026 年 10 月</p>
+
+  <div class="note">
+    <p>一句话：<strong>这个 App 不联网、不采集、不上传任何东西。</strong>
+       你的照片、识别结果和表格全部只存在这台手机上，开发者看不到，也没有任何服务器接收它们。</p>
+  </div>
+
+  <h2>具体来说</h2>
+  <ul>
+    <li><strong>没有网络功能。</strong>App 不包含任何网络请求代码，也不申请网络权限之外的用途。飞行模式下功能完全正常。</li>
+    <li><strong>文字识别在本机完成。</strong>用的是随安装包一起分发的 Google ML Kit 离线模型，图片不会被发送到任何服务器。</li>
+    <li><strong>不申请多余权限。</strong>只申请「相机」一项——不打开相机就无法识别。没有定位、没有通讯录、没有存储、没有电话状态。</li>
+    <li><strong>没有账号、没有统计、没有广告。</strong>不收集设备标识符，不接入任何分析或崩溃上报 SDK。</li>
+  </ul>
+
+  <h2>你的数据存在哪里</h2>
+  <p>全部在 App 的私有目录里，其他 App 读不到，卸载时会被系统一并清除：</p>
+
+  <table>
+    <thead><tr><th>内容</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>相册</td>
+        <td>每次拍摄存一张 480px 宽的预览图（JPEG）和一份识别结果（JSON），最多 200 张，超出后从最早的开始删。</td>
+      </tr>
+      <tr>
+        <td>数据集</td>
+        <td>导入表格时的原始文件副本，加上解析后的关键词列表。用于和识别结果比对。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>这些文件<strong>不会</strong>出现在系统相册里，也<strong>不会</strong>同步到任何云服务。</p>
+
+  <h2>你能怎么清掉它们</h2>
+  <ul>
+    <li>相册页点「清空」——删掉全部照片和识别结果</li>
+    <li>数据集管理页逐个删除导入的表格（内置的示例数据集删不掉，它不含任何用户数据）</li>
+    <li>卸载 App——系统会清掉整个私有目录</li>
+  </ul>
+
+  <h2>第三方组件</h2>
+  <p>App 使用了以下开源 / 官方组件，它们都只在本机运行：</p>
+  <ul>
+    <li>AndroidX CameraX —— 相机</li>
+    <li>Google ML Kit 文字识别（拉丁文模型）—— 离线 OCR</li>
+    <li>Jetpack Compose —— 界面</li>
+  </ul>
+  <p>这些库本身不参与任何数据收集行为。</p>
+
+  <h2>说明</h2>
+  <p>这是一个个人开源项目，源码在
+     <a href="https://github.com/averyzhoux/auto-snap-recognizer">GitHub</a> 上完全公开，
+     上面写的每一条都可以在代码里核对。如果发现任何与本文不符的行为，欢迎
+     <a href="https://github.com/averyzhoux/auto-snap-recognizer/issues">提 issue</a>。</p>
+
+  <p>注意：通过非官方渠道获取的安装包不在此说明范围内——请只从
+     <a href="https://github.com/averyzhoux/auto-snap-recognizer/releases">官方 Releases 页面</a>下载。</p>
+</main>
+
+<footer>
+  <div class="wrap">MIT License · © 2026 Avery Zhou</div>
+</footer>
+
+</body>
+</html>

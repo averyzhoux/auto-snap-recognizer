@@ -1,1 +1,553 @@
-https://github.com/averyzhoux/auto-snap-recognizer/settings
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto Snap Recognizer — 拍照识别，自动比对表格</title>
+<meta name="description" content="Android 应用：拍照识别画面中的文字，与本地表格逐项比对，命中项高亮提示。支持每秒自动连拍，完全离线运行。">
+<meta name="theme-color" content="#0e0e10">
+<style>
+  :root {
+    --bg: #0e0e10;
+    --surface: #17171a;
+    --surface-2: #1f1f24;
+    --line: rgba(255, 255, 255, 0.10);
+    --text: #f2f2f4;
+    --dim: rgba(255, 255, 255, 0.62);
+    --dimmer: rgba(255, 255, 255, 0.40);
+    --accent: #ffc800;          /* 和 App 里的小米黄一致 */
+    --accent-dim: rgba(255, 200, 0, 0.14);
+    --radius: 16px;
+    --maxw: 900px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 22px; }
+
+  /* ---------- 顶部 ---------- */
+  .topbar {
+    border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(14, 14, 16, 0.86);
+    backdrop-filter: blur(12px);
+  }
+  .topbar .wrap {
+    display: flex; align-items: center; gap: 18px;
+    height: 58px;
+  }
+  .brand { font-weight: 700; letter-spacing: .2px; }
+  .brand span { color: var(--accent); }
+  .topbar nav { margin-left: auto; display: flex; gap: 20px; }
+  .topbar nav a { color: var(--dim); font-size: 14px; }
+  .topbar nav a:hover { color: var(--text); }
+
+  /* ---------- Hero ---------- */
+  .hero { padding: 64px 0 40px; }
+  .hero-grid {
+    display: grid; grid-template-columns: 1.15fr .85fr;
+    gap: 44px; align-items: center;
+  }
+  .tag {
+    display: inline-block;
+    background: var(--accent-dim); color: var(--accent);
+    border: 1px solid rgba(255, 200, 0, .28);
+    border-radius: 999px; padding: 4px 12px;
+    font-size: 12.5px; font-weight: 600;
+  }
+  h1 { font-size: 40px; line-height: 1.22; margin: 18px 0 12px; letter-spacing: -.5px; }
+  h1 em { font-style: normal; color: var(--accent); }
+  .lead { color: var(--dim); font-size: 17px; margin: 0 0 26px; }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 12px 22px; border-radius: 999px;
+    font-weight: 600; font-size: 15px; border: 1px solid transparent;
+  }
+  .btn-primary { background: var(--accent); color: #14140f; }
+  .btn-primary:hover { text-decoration: none; filter: brightness(1.06); }
+  .btn-ghost { border-color: var(--line); color: var(--text); }
+  .btn-ghost:hover { text-decoration: none; background: var(--surface-2); }
+  .meta { color: var(--dimmer); font-size: 13px; margin-top: 16px; }
+
+  /* ---------- 手机示意图（纯 CSS，无图片） ---------- */
+  .phone {
+    width: 240px; margin: 0 auto;
+    border: 7px solid #2a2a30; border-radius: 32px;
+    background: #000; padding: 9px; aspect-ratio: 9 / 18.5;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
+    display: flex; flex-direction: column; gap: 8px;
+    position: relative; overflow: hidden;
+  }
+  .phone::before {      /* 取景画面 */
+    content: ""; position: absolute; inset: 0;
+    background:
+      radial-gradient(120% 80% at 20% 15%, rgba(255, 200, 0, .10), transparent 60%),
+      linear-gradient(160deg, #24242b 0%, #131318 55%, #1c1c22 100%);
+  }
+  .ph-row { display: flex; gap: 6px; position: relative; }
+  .ph-pill {
+    background: rgba(0, 0, 0, .62); border-radius: 999px;
+    padding: 4px 9px; font-size: 9px; white-space: nowrap;
+    border: 1px solid rgba(255, 255, 255, .07);
+  }
+  .ph-pill.right { margin-left: auto; }
+  .ph-pill b { color: var(--accent); }
+  .ph-spacer { flex: 1; }
+  .ph-panel {
+    position: relative; margin-top: auto;
+    background: rgba(0, 0, 0, .74);
+    border-radius: 12px; padding: 9px 10px;
+    font-size: 9px; line-height: 1.65;
+  }
+  .ph-panel .count { color: var(--dim); }
+  .ph-panel .count b { color: var(--accent); font-size: 11px; }
+  .ph-hit {
+    margin-top: 5px; color: var(--accent);
+    background: rgba(255, 200, 0, .12);
+    border-radius: 5px; padding: 3px 5px;
+  }
+  .ph-divider { height: 1px; background: rgba(255,255,255,.18); margin: 6px 0; }
+  .ph-miss { color: rgba(255,255,255,.55); }
+  .ph-bar {
+    position: relative; display: flex; align-items: center; gap: 10px;
+    padding: 4px 2px 2px;
+  }
+  .ph-thumb {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: linear-gradient(135deg, #3a3a44, #1b1b21);
+    border: 1px solid rgba(255,255,255,.22);
+  }
+  .ph-shutter {
+    width: 40px; height: 40px; border-radius: 50%; margin: 0 auto;
+    border: 3px solid rgba(255,255,255,.9);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ph-shutter i { width: 30px; height: 30px; border-radius: 50%; background: #fff; display: block; }
+  .ph-mode {
+    width: 26px; height: 26px; border-radius: 50%;
+    border: 1.5px solid var(--accent); color: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 8px;
+  }
+
+  /* ---------- 通用 section ---------- */
+  section { padding: 46px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 25px; margin: 0 0 8px; letter-spacing: -.3px; }
+  h2 + .sub { color: var(--dim); margin: 0 0 26px; font-size: 15px; }
+  h3 { font-size: 16px; margin: 26px 0 10px; }
+  p { margin: 0 0 14px; }
+  .muted { color: var(--dim); }
+  .tiny { font-size: 13.5px; }
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 18px;
+  }
+  .card h4 { margin: 0 0 6px; font-size: 15px; }
+  .card p { margin: 0; color: var(--dim); font-size: 13.5px; line-height: 1.6; }
+  .card .ic { font-size: 20px; margin-bottom: 8px; display: block; }
+
+  pre {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px; overflow-x: auto;
+    font: 13.5px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #e6e6ea; margin: 0 0 16px;
+  }
+  code {
+    background: var(--surface-2); border-radius: 5px;
+    padding: 1px 6px; font-size: 13.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  pre code { background: none; padding: 0; }
+
+  ol, ul { padding-left: 22px; margin: 0 0 16px; }
+  li { margin: 5px 0; }
+  li::marker { color: var(--dimmer); }
+
+  .table-scroll { overflow-x: auto; margin: 0 0 18px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; font-size: 13px; white-space: nowrap; }
+  td code { font-size: 12.5px; }
+
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-dim);
+    border-radius: 0 12px 12px 0;
+    padding: 14px 18px; margin: 0 0 18px; font-size: 14.5px;
+  }
+  .note.warn { border-left-color: #ff8a65; background: rgba(255, 138, 101, .12); }
+  .note strong { color: var(--accent); }
+  .note.warn strong { color: #ff8a65; }
+
+  details {
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 18px; margin-bottom: 10px; background: var(--surface);
+  }
+  details summary { cursor: pointer; font-weight: 600; font-size: 15px; }
+  details p { margin: 12px 0 0; color: var(--dim); font-size: 14px; }
+
+  .flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .step {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 16px; text-align: center;
+  }
+  .step .n {
+    width: 26px; height: 26px; border-radius: 50%; margin: 0 auto 10px;
+    background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(255,200,0,.3);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700;
+  }
+  .step h4 { margin: 0 0 4px; font-size: 14px; }
+  .step p { margin: 0; color: var(--dim); font-size: 12.5px; line-height: 1.55; }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 30px 0 46px; color: var(--dimmer); font-size: 13.5px;
+  }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; }
+  footer .sp { flex: 1; }
+
+  @media (max-width: 780px) {
+    .hero-grid { grid-template-columns: 1fr; gap: 34px; }
+    .hero { padding: 40px 0 26px; }
+    h1 { font-size: 30px; }
+    .cards { grid-template-columns: 1fr; }
+    .flow { grid-template-columns: repeat(2, 1fr); }
+    .topbar nav { display: none; }
+    .phone { width: 220px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="wrap">
+    <div class="brand">Auto Snap <span>Recognizer</span></div>
+    <nav>
+      <a href="#features">功能</a>
+      <a href="#dataset">数据集</a>
+      <a href="#install">安装</a>
+      <a href="#dev">开发</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </div>
+</div>
+
+<div class="hero wrap">
+  <div class="hero-grid">
+    <div>
+      <span class="tag">Android · 完全离线</span>
+      <h1>拍照识别文字，<br>自动和你的表格<em>逐项比对</em></h1>
+      <p class="lead">
+        打开相机对准目标，拍一张，或者让它每秒自动连拍。
+        识别出的每一行都会和本地表格比对，命中项直接高亮标出——代替人眼识别、人脑核对。
+      </p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/averyzhoux/auto-snap-recognizer/releases/latest">
+          下载 APK
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/averyzhoux/auto-snap-recognizer">
+          查看源码
+        </a>
+      </div>
+      <p class="meta">Android 7.0+（API 24）· 约 55 MB · 无需联网、无需账号、不采集任何数据</p>
+    </div>
+
+    <!-- 纯 CSS 画的应用界面示意 -->
+    <div class="phone" aria-hidden="true">
+      <div class="ph-row">
+        <span class="ph-pill">命中 <b>3</b> / 20</span>
+        <span class="ph-pill right">标签表 <b>102 ›</b></span>
+      </div>
+      <div class="ph-spacer"></div>
+      <div class="ph-panel">
+        <div class="count">命中 <b>1</b> / 11</div>
+        <div class="ph-hit">✓ Alibaba Manufacturer Directory<br>→ Manufacturer（近似 90%）</div>
+        <div class="ph-divider"></div>
+        <div class="ph-miss">· Ctrl</div>
+        <div class="ph-miss">· Tab</div>
+        <div class="ph-miss">· Caps Lock</div>
+      </div>
+      <div class="ph-bar">
+        <span class="ph-thumb"></span>
+        <span class="ph-shutter"><i></i></span>
+        <span class="ph-mode">手动</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<section id="features" class="wrap">
+  <h2>功能</h2>
+  <p class="sub">从取景到出结果，全部在手机上完成。</p>
+  <div class="cards">
+    <div class="card">
+      <span class="ic">📷</span>
+      <h4>整屏取景</h4>
+      <p>CameraX 驱动，底部控制栏参照相机 App 设计，竖屏锁定。</p>
+    </div>
+    <div class="card">
+      <span class="ic">⏱️</span>
+      <h4>手动 / 自动</h4>
+      <p>默认手动点按快门；切到自动则每秒抓一帧，适合流水线式扫一堆标签。</p>
+    </div>
+    <div class="card">
+      <span class="ic">🔍</span>
+      <h4>离线 OCR</h4>
+      <p>Google ML Kit 拉丁文模型随包分发，不联网也能识别英文和数字。</p>
+    </div>
+    <div class="card">
+      <span class="ic">🎯</span>
+      <h4>聪明的比对</h4>
+      <p>精确 → 包含 → 模糊三层策略，容忍 OCR 常见的字母错认。</p>
+    </div>
+    <div class="card">
+      <span class="ic">🗂️</span>
+      <h4>内部相册</h4>
+      <p>每次拍摄自动存档（预览图 + 识别结果），可回看、可点开看逐行结果。</p>
+    </div>
+    <div class="card">
+      <span class="ic">📋</span>
+      <h4>多个数据集</h4>
+      <p>表格可导入多份、随时切换，跨重启保留。右上角随时看到当前用的是哪份。</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>它是怎么工作的</h2>
+  <p class="sub">四步，全自动。</p>
+  <div class="flow">
+    <div class="step"><div class="n">1</div><h4>取景</h4><p>相机实时预览，对准要核对的内容</p></div>
+    <div class="step"><div class="n">2</div><h4>拍摄</h4><p>手动点快门，或自动每秒一帧</p></div>
+    <div class="step"><div class="n">3</div><h4>识别</h4><p>ML Kit 把画面里的文字逐行读出来</p></div>
+    <div class="step"><div class="n">4</div><h4>比对</h4><p>逐行和表格比，命中项高亮打勾</p></div>
+  </div>
+
+  <h3>界面上会看到什么</h3>
+  <p class="muted tiny">左上角是当前状态，右上角是正在使用的数据集，中间浮层是比对结果（分界线之上先列命中项，之下是全部识别结果）。</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>左上角显示</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>对准目标，等待识别</code></td><td>空闲，或刚点过「重拍」</td></tr>
+        <tr><td><code>正在识别文字…</code></td><td>正在识别，还没有历史结果</td></tr>
+        <tr><td><code>命中 3 / 20（更新中…）</code></td><td>正在识别下一帧，画面里是上一帧的结果</td></tr>
+        <tr><td><code>命中 3 / 20</code></td><td>识别完成，命中 3 行</td></tr>
+        <tr><td><code>命中 3 / 20（画面未变）</code></td><td>这一帧和上一帧一样，直接复用了上次结果（省一次识别）</td></tr>
+        <tr><td><code>无命中 · 20 行</code></td><td>识别到 20 行，但没有一行在表格里</td></tr>
+        <tr><td><code>没识别到文字</code></td><td>画面里确实没有可识别的文字</td></tr>
+        <tr><td><code>OCR 识别失败</code></td><td>识别引擎出错（和「没文字」是两回事）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note">
+    <strong>命中 X / Y 里的 Y 是「这一帧识别到的行数」</strong>，不是表格条目数。
+    表格有多少条看右上角那个胶囊。
+  </div>
+</section>
+
+<section id="dataset" class="wrap">
+  <h2>数据集格式</h2>
+  <p class="sub">一行一个关键词。点右上角的胶囊进入管理页，可以选文件导入，也可以直接粘贴。</p>
+
+<pre><code># 以 # 开头的是注释行，会被跳过
+Serial Number
+Model
+Manufacturer, Mfg, Maker
+Production Date</code></pre>
+
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>规则</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>一行一个条目</td><td>这一行的内容就是关键词</td></tr>
+        <tr><td>逗号 / 制表符 / 分号</td><td><strong>第一个是名称，其余当别名</strong>：上面例子里 <code>Mfg</code>、<code>Maker</code> 都算命中 <code>Manufacturer</code></td></tr>
+        <tr><td>空行与 <code>#</code> 注释</td><td>跳过，不算错误</td></tr>
+        <tr><td>两侧空白与 CSV 引号</td><td>自动去掉，<code>"Serial Number"</code> → <code>Serial Number</code></td></tr>
+        <tr><td>名称重复</td><td>合并别名，不会产生重复条目</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note">
+    <strong>Excel 导出的 CSV 默认是 GBK 编码</strong>，不是 UTF-8。直接用 UTF-8 读会全是乱码，
+    所以 App 会按 <code>UTF-8 BOM → UTF-8 → GBK</code> 顺序自动探测，
+    <strong>导入预览页会把识别到的编码显示出来</strong>，一眼能确认。
+  </div>
+
+  <p class="muted tiny">
+    导入一定会先进预览页：解析出多少项、前几项长什么样、编码是什么、跳过了几行——确认无误才落盘。
+    这一步是故意的，格式不对当场就能看出来，不会白白导入一堆垃圾数据。
+  </p>
+</section>
+
+<section class="wrap">
+  <h2>比对是怎么做的</h2>
+  <p class="sub">三层策略，从严格到宽松。</p>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>层</th><th>规则</th><th>例子</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><strong>完全一致</strong>（归一化之后）</td><td><code>Serial Number:</code> = <code>serial number</code></td></tr>
+        <tr><td>2</td><td><strong>包含</strong>：识别行里含某个表格项</td><td><code>Serial Number: A12345</code> → <code>Serial Number</code></td></tr>
+        <tr><td>3</td><td><strong>模糊</strong>：编辑距离容忍字母错认</td><td><code>Manufacterer</code> → <code>Manufacturer</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>比对之前先做归一化：转小写、全角转半角、只保留字母/数字/汉字，丢掉所有空白和标点。
+     所以 <code>Serial Number:</code>、<code>ＳＥＲＩＡＬ　ＮＵＭＢＥＲ</code> 会被当成同一个。</p>
+
+  <h3>为什么门槛不能一刀切</h3>
+  <p class="muted tiny">英文单词很短，改一个字母往往就是另一个词，所以用相似度阈值会出事：</p>
+  <ul class="muted tiny">
+    <li>长度少于 5 个字母的词<strong>不参与模糊匹配</strong>（<code>date</code> 和 <code>rate</code> 只差一个字母）</li>
+    <li>5~6 个字母容忍 1 处差异，7~10 容忍 2 处，11 个以上容忍 3 处</li>
+    <li>包含关系只认一个方向——识别行包含表格项才算命中。反过来算的话，<code>Rate</code> 会因为落在 <code>Rated Voltage</code> 里而误命中</li>
+  </ul>
+</section>
+
+<section id="install" class="wrap">
+  <h2>安装</h2>
+  <p class="sub">下载 APK 直接装，不需要 root，不需要任何权限之外的东西。</p>
+  <ol>
+    <li>点 <a href="https://github.com/averyzhoux/auto-snap-recognizer/releases/latest">下载最新 APK</a>（文件名叫 <code>recognizer-&lt;版本&gt;-debug.apk</code>）</li>
+    <li>手机上点开它，系统会提示「允许安装未知应用」，同意即可</li>
+    <li>首次打开会申请<strong>相机权限</strong>——识别需要它，除此之外没有其他权限</li>
+  </ol>
+
+  <div class="note warn">
+    <strong>这是 debug 签名的构建</strong>（用 Android 默认调试密钥签名），仅供自己安装体验，
+    <strong>不适合上架应用商店或对外分发</strong>。构建流程里缓存了调试密钥，所以后续版本可以直接覆盖升级；
+    但缓存在长期无访问后被清理时会换密钥，届时需要卸载重装（<strong>卸载会清掉相册和数据集</strong>）。
+  </div>
+
+  <p class="muted tiny">
+    所有数据都存在 App 私有目录里，卸载即清除。想清理相册可以在相册页点「清空」。
+  </p>
+</section>
+
+<section id="dev" class="wrap">
+  <h2>开发</h2>
+  <p class="sub">Kotlin + Jetpack Compose，CameraX 取景，ML Kit 识别。</p>
+
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>项</th><th>版本</th></tr></thead>
+      <tbody>
+        <tr><td>JDK</td><td><strong>25</strong>（项目把 Gradle daemon 钉死在 25）</td></tr>
+        <tr><td>Android SDK</td><td>Platform 37</td></tr>
+        <tr><td>Gradle / AGP / Kotlin</td><td>9.6.0 / 9.4.0 / 2.2.10</td></tr>
+        <tr><td>最低支持</td><td>Android 7.0（API 24）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>构建</h3>
+  <p class="muted tiny">用 Android Studio 直接点 Run 即可（它自带的 JBR 就是 Java 25）。命令行必须显式指定 JDK 25：</p>
+
+<pre><code>JAVA_HOME="$HOME/下载/android-studio/jbr" ./gradlew :app:assembleDebug</code></pre>
+
+  <div class="note warn">
+    如果报 <code>Unable to download toolchain matching the requirements ({languageVersion=25, ...})</code>，
+    就是 JDK 版本不对——Gradle 正试图从网上拉一个 Java 25 工具链。把 <code>JAVA_HOME</code> 指到 25 即可。
+  </div>
+
+  <h3>测试</h3>
+<pre><code>JAVA_HOME="$HOME/下载/android-studio/jbr" ./gradlew :app:testDebugUnitTest</code></pre>
+  <p class="muted tiny">
+    33 个单元测试全部跑在电脑上，不需要真机：比对引擎 16 个、表格解析与编码探测 16 个、模板样例 1 个。
+  </p>
+
+  <h3>源码结构</h3>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>文件</th><th>职责</th></tr></thead>
+      <tbody>
+        <tr><td><code>MainActivity.kt</code></td><td>界面与流程编排（相机、状态机、各页面）</td></tr>
+        <tr><td><code>OcrMatcher.kt</code></td><td>比对引擎：三层策略 + 编辑距离</td></tr>
+        <tr><td><code>TextNormalizer.kt</code></td><td>归一化：大小写、全角半角、标点</td></tr>
+        <tr><td><code>DatasetParser.kt</code></td><td>表格解析 + 编码探测（纯函数，可单测）</td></tr>
+        <tr><td><code>DatasetStore.kt</code></td><td>数据集的落盘 / 列表 / 删除 / 激活</td></tr>
+        <tr><td><code>GalleryStore.kt</code></td><td>相册的落盘 / 读取 / 淘汰</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="muted tiny">
+    <code>DatasetParser</code> 刻意和 <code>DatasetStore</code> 分开：解析全是纯函数、不碰 <code>Context</code>，
+    所以能直接在电脑上跑单元测试。
+  </p>
+</section>
+
+<section class="wrap">
+  <h2>已知限制</h2>
+  <ul class="muted">
+    <li><strong>只识别拉丁文</strong>（英文 + 数字）。需要中文得换成中文模型依赖。</li>
+    <li><strong>相册只存预览图</strong>（480px 宽），点开看大图会糊——这是为了不把十几 MB 的原图堆在手机里。</li>
+    <li><strong>表格是单列关键词</strong>，不支持「字段名 + 标准值」的取值校验。</li>
+    <li><strong>不解析 HTML</strong>，导入 HTML 会把标签当成关键词（预览页能看出来）。</li>
+    <li><strong>没有导出功能</strong>，卸载 App 会清掉相册和数据集。</li>
+  </ul>
+</section>
+
+<section id="faq" class="wrap">
+  <h2>常见问题</h2>
+
+  <details>
+    <summary>需要联网吗？会上传我的照片吗？</summary>
+    <p>完全不需要联网，也不会传任何东西。识别模型是随 APK 一起打包的，照片、识别结果、表格全部只存在手机本地。飞行模式下功能完全正常。</p>
+  </details>
+
+  <details>
+    <summary>为什么 APK 有 55 MB？</summary>
+    <p>主要是 ML Kit 的 native 识别库，而它同时打包了 4 种 CPU 架构（arm64 / armv7 / x86 / x86_64），这一项就占 42 MB。实际只需要 arm64 一个，但为了兼容性现在都带着。</p>
+  </details>
+
+  <details>
+    <summary>装新版本提示「应用未安装」怎么办？</summary>
+    <p>说明新旧两个包的签名不一致。先卸载旧的再装（注意：<strong>卸载会清掉相册和数据集</strong>）。这种情况只会在签名密钥变化时出现。</p>
+  </details>
+
+  <details>
+    <summary>为什么默认是手动模式？</summary>
+    <p>自动模式每秒抓一帧，适合连续扫很多标签，但耗电快、相册也会很快堆满。默认手动更可控，需要时右下角切一下即可。</p>
+  </details>
+
+  <details>
+    <summary>识别不准怎么办？</summary>
+    <p>让文字占满画面、光线均匀、手机端平（减少透视变形）都能明显提升准确率。另外只有和表格里某一项能对上时才会打勾——如果表格里的写法和你拍到的差太多，可以在表格那一行里用逗号补上别名。</p>
+  </details>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>MIT License · © 2026 Avery Zhou</span>
+    <span class="sp"></span>
+    <a href="https://github.com/averyzhoux/auto-snap-recognizer">GitHub</a>
+    <a href="https://github.com/averyzhoux/auto-snap-recognizer/releases">Releases</a>
+    <a href="https://github.com/averyzhoux/auto-snap-recognizer/issues">反馈问题</a>
+    <a href="privacy.html">隐私说明</a>
+  </div>
+</footer>
+
+</body>
+</html>
