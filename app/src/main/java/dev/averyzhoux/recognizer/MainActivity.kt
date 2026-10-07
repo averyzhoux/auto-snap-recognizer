@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
 import android.util.LruCache
+import android.util.Size
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
@@ -19,14 +20,18 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
@@ -46,6 +51,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -68,6 +74,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -102,11 +109,23 @@ import java.text.SimpleDateFormat
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 private const val TAG = "Recognizer"
 
 /** 自动模式下两帧之间的间隔 */
 private const val AUTO_CAPTURE_INTERVAL_MS = 1_000L
+
+/**
+ * 连续推帧模式下，两次「存入相册」之间的最小间隔。
+ *
+ * 自动拍摄是 1 秒一帧，流式分析更快——画面静止时走像素指纹复用，不跑 ML Kit，
+ * 能一直贴着相机帧率出帧。每帧都存的话 [MAX_GALLERY_ITEMS] 张上限几秒钟就满，
+ * 磁盘也会一直写（每张约 40KB）。
+ *
+ * 手动拍摄**不受**这个限制：那是使用者自己按的快门，每张都该留着。
+ */
+private const val GALLERY_SAVE_INTERVAL_MS = 3_000L
 
 /** 快门按钮的直径 */
 private val SHUTTER_SIZE = 76.dp
@@ -140,6 +159,49 @@ private fun matchColor(match: LineMatch): Color? = when {
  * [THUMBNAIL_CACHE_SIZE] 张会被缓存。
  */
 private const val THUMBNAIL_WIDTH = 480
+
+/**
+ * 识别管线：决定「怎么从相机拿帧」和「怎么喂给 ML Kit」。
+ *
+ * 5 种模式的内存/耗时/精度取舍不同，让使用者按场景自己选（见底部的模式行）。
+ * 默认 [Standard]——也就是最初那一版行为，保持兼容。
+ */
+enum class Pipeline(val label: String) {
+    /** 原方式：ImageCapture 全分辨率 + toBitmap + fromBitmap */
+    Standard("标准"),
+
+    /** A 省内存：ImageCapture 全分辨率，但 ML Kit 直接读相机 YUV（零拷贝） */
+    MediaImage("省内存"),
+
+    /** B 降采样：先缩到长边 [DOWNSCALE_LONG_EDGE] 再喂 ML Kit */
+    Downscaled("降采样"),
+
+    /** C 小图直出：用 ResolutionSelector 让相机 HAL 直接出小图 */
+    SmallCapture("小图直出"),
+
+    /** D 流式分析：ImageAnalysis + KEEP_ONLY_LATEST，由相机推帧而不是我们定时拍 */
+    Analysis("流式分析");
+
+    /** 用 ImageAnalysis 驱动（只有 D） */
+    val usesAnalysis: Boolean get() = this == Analysis
+
+    /** ML Kit 拿到的是 Bitmap（标准 / 降采样），而不是 MediaImage */
+    val usesBitmap: Boolean get() = this == Standard || this == Downscaled
+
+    companion object {
+        /** B 降采样：长边目标。2048 是保守值——再小就可能认不出远处的小字 */
+        const val DOWNSCALE_LONG_EDGE = 2048
+
+        /** C 小图直出：让相机输出的尺寸 */
+        val SMALL_CAPTURE_SIZE = Size(1600, 1200)
+
+        /** D 流式分析：分析流尺寸 */
+        val ANALYSIS_SIZE = Size(1920, 1080)
+    }
+}
+
+/** 相册节流里「还没存过任何一帧」的哨兵指纹 */
+private const val NEVER_SAVED = Long.MIN_VALUE
 
 /** 摄像头拍到的原始帧（已是给 ML Kit 用的方向），bitmap 是缩小过的缩略图。 */
 private data class CapturedFrame(val bitmap: Bitmap, val rotationDegrees: Int)
@@ -397,79 +459,174 @@ fun CameraOcrScreen() {
         }
     }
 
-        // 抽成函数，给自动循环和手动按钮共用
+    // 当前识别管线。默认「标准」= 最初那一版行为。
+    var pipeline by remember { mutableStateOf(Pipeline.Standard) }
+
+    /**
+     * 是不是「相机一直在推帧」。
+     *
+     * 流式分析进来自动连续处理，**完全不看**手动/自动开关——
+     * 这条管线本来就没有「按一次快门拍一张」这个概念，开关留着只会让人困惑。
+     * 其余四条管线才由 [autoMode] 决定：自动定时拍 / 手动等快门。
+     */
+    val continuousCapture by remember {
+        derivedStateOf { pipeline.usesAnalysis || autoMode }
+    }
+
+    // 相册节流用的两个记录：上次存下来的那帧指纹、上次存的时间。
+    // 指纹存的是 [CapturedFrame.signature] 的 Long，不是位图。
+    val lastSavedSignature = remember { AtomicLong(NEVER_SAVED) }
+    val lastSavedAt = remember { AtomicLong(0L) }
+
+    /**
+     * 这一帧要不要写进相册。
+     *
+     * 手动拍摄每张都存；连续推帧时按两条规则节流：
+     *  1. 画面跟上次存过的完全一样 → 跳过（指纹相同，说明就是同一张画面）
+     *  2. 距上次存不足 [GALLERY_SAVE_INTERVAL_MS] → 跳过
+     *
+     * 「跳过」不等于丢掉：识别结果照常刷新，画面一变、时间一到就会存下来。
+     */
+    val shouldSaveToGallery: (Long) -> Boolean = { signature ->
+        if (!continuousCapture) {
+            true
+        } else if (signature == lastSavedSignature.get()) {
+            false
+        } else {
+            val now = System.currentTimeMillis()
+            if (now - lastSavedAt.get() < GALLERY_SAVE_INTERVAL_MS) {
+                false
+            } else {
+                lastSavedSignature.set(signature)
+                lastSavedAt.set(now)
+                true
+            }
+        }
+    }
+
+    /**
+     * 处理一帧。5 条管线最终都走这里，区别只在 [pipeline] 决定的取图 / 喂图方式。
+     *
+     * 位图策略：
+     * - 标准 / 降采样：位图既喂 ML Kit，也拿来做缩略图
+     * - 省内存 / 小图直出 / 流式：位图**只用来做缩略图**，ML Kit 直接读 MediaImage（零拷贝）
+     */
+    val processFrame: (ImageProxy) -> Unit = frame@{ image ->
+        busy.set(true)
+        val current = pipeline
+        val rotationDegrees = image.imageInfo.rotationDegrees
+
+        val full = runCatching { image.toBitmap() }.getOrNull()
+        if (full == null) {
+            Log.e(TAG, "toBitmap() 失败，丢弃这一帧")
+            status = OcrStatus.Failed("解码这一帧失败")
+            image.close()
+            busy.set(false)
+            return@frame
+        }
+
+        // 缩略图：状态栏和相册都只用它，全分辨率那张不进任何状态
+        val thumb = full.scaledToWidth(THUMBNAIL_WIDTH)
+        // 指纹用缩略图算——比在全分辨率图上再降采样便宜几十倍
+        val signature = CapturedFrame(bitmap = thumb, rotationDegrees = rotationDegrees).signature()
+
+        // 喂给 ML Kit 的那份（只有前两条管线需要位图）
+        val ocrSource: Bitmap? = when {
+            !current.usesBitmap -> null
+            current == Pipeline.Downscaled -> full.scaledToLongEdge(Pipeline.DOWNSCALE_LONG_EDGE)
+            else -> full
+        }
+        // 缩略图和 ocrSource 都是独立拷贝，全分辨率这张可以立刻放掉
+        if (ocrSource !== full) full.recycle()
+
+        Log.d(
+            TAG,
+            "pipeline=${current.label} in=${image.width}x${image.height} " +
+                "ocr=${ocrSource?.let { "${it.width}x${it.height}" } ?: "MediaImage"} rot=$rotationDegrees"
+        )
+
+        val cached = lastMatches
+        if (signature == lastSignature && cached != null) {
+            // 画面没变，直接复用上次的比对结果，省掉一次 ML Kit 调用
+            Log.d(TAG, "frame unchanged, reuse cached result")
+            lastSignature = signature
+            status = OcrStatus.Recognized(thumb, cached, fromCache = true)
+            if (shouldSaveToGallery(signature)) {
+                saveToGallery(
+                    store = galleryStore,
+                    gallery = gallery,
+                    preview = thumb,
+                    lines = cached.map { it.rawText },
+                    matches = cached
+                )
+            }
+            ocrSource?.recycle()
+            image.close()
+            busy.set(false)
+            return@frame
+        }
+
+        status = OcrStatus.Recognizing(thumb, cached)
+
+        // 收尾：成功和失败都走这里，顺手把位图和 ImageProxy 放掉。
+        // MediaImage 模式**必须**等 ML Kit 结束才能 close，所以放在回调里而不是 finally。
+        val finish: (List<String>, List<LineMatch>, Boolean) -> Unit = { lines, result, ocrFailed ->
+            // 失败时不能写 lastSignature / lastMatches：
+            // 否则画面不变时会一直复用这份空结果，永远不再重试 OCR。
+            if (!ocrFailed) {
+                lastSignature = signature
+                lastMatches = result
+            }
+            status = OcrStatus.Recognized(
+                bitmap = thumb,
+                matches = result,
+                fromCache = false,
+                ocrFailed = ocrFailed
+            )
+            if (shouldSaveToGallery(signature)) {
+                saveToGallery(
+                    store = galleryStore,
+                    gallery = gallery,
+                    preview = thumb,
+                    lines = lines,
+                    matches = result
+                )
+            }
+            ocrSource?.recycle()
+            image.close()
+            busy.set(false)
+        }
+
+        try {
+            // 注意：ML Kit 的 fromMediaImage 要的是 android.media.Image，
+            // 从 ImageProxy 里取；并且这张图必须**保持有效到 ML Kit 回调结束**，
+            // 所以 image.close() 放在 finish 里而不是 finally。
+            val mediaImage = image.image
+            val input = if (ocrSource != null) {
+                InputImage.fromBitmap(ocrSource, rotationDegrees)
+            } else if (mediaImage != null) {
+                InputImage.fromMediaImage(mediaImage, rotationDegrees)
+            } else {
+                throw IllegalStateException("这一帧拿不到底层 Image，无法零拷贝识别")
+            }
+            recognize(textRecognizer, matcherHolder.value, input, finish)
+        } catch (error: Throwable) {
+            Log.e(TAG, "handle captured image failed", error)
+            status = OcrStatus.Failed(error.message ?: "处理图片失败")
+            ocrSource?.recycle()
+            image.close()
+            busy.set(false)
+        }
+    }
+
+    // 用 ImageCapture 抓一帧（标准 / 省内存 / 降采样 / 小图直出 四条管线用）
     val takePicture: (ImageCapture) -> Unit = { useCase ->
         busy.set(true)
         useCase.takePicture(
             captureExecutor,
             object : ImageCapture.OnImageCapturedCallback() {
                 override fun onCaptureSuccess(image: ImageProxy) {
-                    try {
-                        // ★ 核心坑位：toBitmap() 是“传感器方向”的原始像素，
-                        //   必须把 rotationDegrees 一路传给 ML Kit，否则图是躺着的。
-                        val rotationDegrees = image.imageInfo.rotationDegrees
-                        val bitmap = image.toBitmap()
-                        val frame = CapturedFrame(
-                            bitmap = bitmap,
-                            rotationDegrees = rotationDegrees
-                        )
-
-                        val signature = frame.signature()
-                        // 缩略图：状态栏和相册都只用它，12MB 的原图不进任何状态
-                        val thumb = bitmap.scaledToWidth(THUMBNAIL_WIDTH)
-                        val cached = lastMatches
-                        val reuse = signature == lastSignature && cached != null
-
-                        if (reuse) {
-                            // 画面没变，直接复用上次的比对结果，省掉一次 ML Kit 调用
-                            Log.d(TAG, "frame unchanged, reuse cached result")
-                            lastSignature = signature
-                            status = OcrStatus.Recognized(thumb, cached, fromCache = true)
-                            saveToGallery(
-                                store = galleryStore,
-                                gallery = gallery,
-                                preview = thumb,
-                                lines = cached.map { it.rawText },
-                                matches = cached
-                            )
-                            // 大图用完立刻回收，不再让它挂在闭包里等 GC
-                            bitmap.recycle()
-                            busy.set(false)
-                        } else {
-                            status = OcrStatus.Recognizing(thumb, cached)
-                            recognize(textRecognizer, matcherHolder.value, bitmap, rotationDegrees) { lines, result, ocrFailed ->
-                                // 失败时**不能**写 lastSignature / lastMatches：
-                                // 否则画面不变时会一直复用这份空结果，永远不再重试 OCR。
-                                if (!ocrFailed) {
-                                    lastSignature = signature
-                                    lastMatches = result
-                                }
-                                status = OcrStatus.Recognized(
-                                    bitmap = thumb,
-                                    matches = result,
-                                    fromCache = false,
-                                    ocrFailed = ocrFailed
-                                )
-                                saveToGallery(
-                                    store = galleryStore,
-                                    gallery = gallery,
-                                    preview = thumb,
-                                    lines = lines,
-                                    matches = result
-                                )
-                                // 识别已结束，原图可以回收
-                                bitmap.recycle()
-                                busy.set(false)
-                            }
-                        }
-                    } catch (error: Throwable) {
-                        Log.e(TAG, "handle captured image failed", error)
-                        status = OcrStatus.Failed(error.message ?: "处理图片失败")
-                        busy.set(false)
-                    } finally {
-                        // 一定要关，否则相机管线会卡住
-                        image.close()
-                    }
+                    processFrame(image)
                 }
 
                 override fun onError(exception: ImageCaptureException) {
@@ -488,7 +645,9 @@ fun CameraOcrScreen() {
 
     // 自动模式：每 1 秒抓一帧。下面这些 key 任一变化就重启循环，
     // Composable 离开时循环自动取消；transientErrorAt 变化会把循环从 delay 里唤醒。
-    LaunchedEffect(autoMode, imageCapture, transientErrorAt, screen) {
+    LaunchedEffect(autoMode, imageCapture, transientErrorAt, screen, pipeline) {
+        // 流式分析由相机连续推帧，跟手动/自动开关无关，这里不参与
+        if (pipeline.usesAnalysis) return@LaunchedEffect
         val useCase = imageCapture ?: return@LaunchedEffect
         if (!autoMode) return@LaunchedEffect
         // 看相册/看详情时暂停拍摄，别一边翻一边往里塞新照片
@@ -521,7 +680,9 @@ fun CameraOcrScreen() {
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         CameraPreview(
             captureExecutor = captureExecutor,
+            pipeline = pipeline,
             onImageCaptureReady = { imageCapture = it },
+            onFrame = processFrame,
             modifier = Modifier.fillMaxSize()
         )
 
@@ -557,7 +718,7 @@ fun CameraOcrScreen() {
             ResultPanel(
                 matches = displayMatches,
                 ocrFailed = ocrFailed,
-                autoMode = autoMode,
+                continuous = continuousCapture,
                 onRetake = {
                     status = OcrStatus.Idle
                     lastSignature = null
@@ -570,66 +731,90 @@ fun CameraOcrScreen() {
             )
         }
 
-        // 底部控件栏：左缩略图、中快门、右模式切换（左右对称）
+        // 底部控件栏：
+        //   上一行 = 识别模式（位置参照相机 App 的「专业 / 录像 / 人像」那一排）
+        //   下一行 = 左缩略图 / 中快门 / 右模式切换（左右对称）
         // 刻意不加任何背景/渐变衬底 —— 控制栏直接透出取景画面，
         // 只做导航栏避让，让内容延伸到透明的导航栏后面。
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.navigationBars)
-                .padding(bottom = 18.dp, start = 28.dp, end = 28.dp)
+                .padding(bottom = 18.dp)
         ) {
-            // 左侧：最近一帧缩略图，点一下进内部相册。
-            // 刚启动还没有实时帧时，回落到相册里最新的一张（从磁盘按需解码），
-            // 否则每次重开 APP 这个位置都是空的。
-            Box(
-                modifier = Modifier.size(THUMBNAIL_SLOT),
-                contentAlignment = Alignment.Center
+            PipelineModeRow(
+                current = pipeline,
+                onSelect = { picked ->
+                    if (picked != pipeline) {
+                        pipeline = picked
+                        // 换管线要清帧缓存：不同管线画质不同，复用旧结果会误导
+                        lastSignature = null
+                        lastMatches = null
+                    }
+                }
+            )
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 28.dp, end = 28.dp)
             ) {
-                val live = status.bitmapOrNull()
-                if (live != null) {
-                    Thumbnail(bitmap = live, onClick = { screen = Screen.Gallery })
-                } else {
-                    // gallery 是最新在前
-                    val newest = gallery.firstOrNull()
-                    if (newest != null) {
-                        val decoded = rememberGalleryBitmap(newest, thumbnailCache)
-                        if (decoded != null) {
-                            Thumbnail(bitmap = decoded, onClick = { screen = Screen.Gallery })
-                        } else {
-                            ImagePlaceholder(
-                                modifier = Modifier
-                                    .size(THUMBNAIL_SLOT)
-                                    .clip(RoundedCornerShape(10.dp))
-                            )
+                // 左侧：最近一帧缩略图，点一下进内部相册。
+                // 刚启动还没有实时帧时，回落到相册里最新的一张（从磁盘按需解码），
+                // 否则每次重开 APP 这个位置都是空的。
+                Box(
+                    modifier = Modifier.size(THUMBNAIL_SLOT),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val live = status.bitmapOrNull()
+                    if (live != null) {
+                        Thumbnail(bitmap = live, onClick = { screen = Screen.Gallery })
+                    } else {
+                        // gallery 是最新在前
+                        val newest = gallery.firstOrNull()
+                        if (newest != null) {
+                            val decoded = rememberGalleryBitmap(newest, thumbnailCache)
+                            if (decoded != null) {
+                                Thumbnail(bitmap = decoded, onClick = { screen = Screen.Gallery })
+                            } else {
+                                ImagePlaceholder(
+                                    modifier = Modifier
+                                        .size(THUMBNAIL_SLOT)
+                                        .clip(RoundedCornerShape(10.dp))
+                                )
+                            }
                         }
                     }
                 }
+    
+                Spacer(modifier = Modifier.weight(1f))
+    
+                ShutterButton(
+                    status = status,
+                    enabled = capture != null,
+                    // 流式分析 / 自动模式下由相机驱动，快门只做状态指示，不参与点击
+                    externallyDriven = continuousCapture,
+                    onClick = { capture?.let(takePicture) }
+                )
+    
+                Spacer(modifier = Modifier.weight(1f))
+    
+                // 右侧：模式切换，和左侧缩略图对称的一个圆形按钮
+                // 流式分析下这个开关没意义，禁用并显示「连续」
+                ModeSwitch(
+                    autoMode = autoMode,
+                    enabled = !pipeline.usesAnalysis,
+                    onToggle = { auto ->
+                        autoMode = auto
+                        // 切模式时清缓存，免得手动模式下看到自动模式的旧结果
+                        lastSignature = null
+                        lastMatches = null
+                    }
+                )
             }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            ShutterButton(
-                status = status,
-                enabled = capture != null,
-                autoMode = autoMode,
-                onClick = { capture?.let(takePicture) }
-            )
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            // 右侧：模式切换，和左侧缩略图对称的一个圆形按钮
-            ModeSwitch(
-                autoMode = autoMode,
-                onToggle = { auto ->
-                    autoMode = auto
-                    // 切模式时清缓存，免得手动模式下看到自动模式的旧结果
-                    lastSignature = null
-                    lastMatches = null
-                }
-            )
         }
 
         // 粘贴导入
@@ -757,6 +942,16 @@ private fun CapturedFrame.signature(): Long {
     return hash
 }
 
+/** 按长边缩放（降采样管线用）。已经小于目标就原样返回。 */
+private fun Bitmap.scaledToLongEdge(targetLongEdge: Int): Bitmap {
+    val longest = maxOf(width, height)
+    if (longest <= targetLongEdge) return this
+    val ratio = targetLongEdge.toFloat() / longest
+    val w = (width * ratio).toInt().coerceAtLeast(1)
+    val h = (height * ratio).toInt().coerceAtLeast(1)
+    return Bitmap.createScaledBitmap(this, w, h, true)
+}
+
 private fun Bitmap.scaledToWidth(targetWidth: Int): Bitmap {
     if (width <= targetWidth) return this
     val targetHeight = (height * (targetWidth.toFloat() / width)).toInt().coerceAtLeast(1)
@@ -772,13 +967,9 @@ private fun Bitmap.scaledToWidth(targetWidth: Int): Bitmap {
 private fun recognize(
     recognizer: TextRecognizer,
     matcher: OcrMatcher,
-    bitmap: Bitmap,
-    rotationDegrees: Int,
+    inputImage: InputImage,
     onResult: (lines: List<String>, matches: List<LineMatch>, ocrFailed: Boolean) -> Unit
 ) {
-    // 第二个参数就是旋转角度，交给 ML Kit 摆正
-    val inputImage = InputImage.fromBitmap(bitmap, rotationDegrees)
-
     recognizer.process(inputImage)
         .addOnSuccessListener { visionText ->
             val lines = visionText.textBlocks
@@ -842,13 +1033,24 @@ private fun saveToGallery(
  * 模式切换：和左侧缩略图对称的一个圆形按钮，点一下在「自动 / 手动」之间切换。
  *
  * 选中态用小米相机的黄色 + 一圈黄色描边表示，一眼能看出当前是哪种模式。
+ * 流式分析下由相机连续推帧，这个开关不适用：[enabled] 传 false，
+ * 按钮灰掉、显示「连续」且不可点。
  */
 @Composable
 private fun ModeSwitch(
     autoMode: Boolean,
+    enabled: Boolean,
     onToggle: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val label = when {
+        !enabled -> "连续"
+        autoMode -> "自动"
+        else -> "手动"
+    }
+    // 「连续」是一种被强制的模式，也算选中态，用黄色表示
+    val active = !enabled || autoMode
+
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
@@ -857,14 +1059,14 @@ private fun ModeSwitch(
             .background(Color.Black.copy(alpha = 0.45f))
             .border(
                 width = 1.5.dp,
-                color = if (autoMode) XiaomiYellow else Color.White.copy(alpha = 0.6f),
+                color = if (active) XiaomiYellow else Color.White.copy(alpha = 0.6f),
                 shape = CircleShape
             )
-            .clickable { onToggle(!autoMode) }
+            .clickable(enabled = enabled) { onToggle(!autoMode) }
     ) {
         Text(
-            text = if (autoMode) "自动" else "手动",
-            color = if (autoMode) XiaomiYellow else Color.White,
+            text = label,
+            color = if (active) XiaomiYellow else Color.White,
             style = MaterialTheme.typography.labelLarge
         )
     }
@@ -873,21 +1075,21 @@ private fun ModeSwitch(
 /**
  * 小米相机式快门按钮：白色圆环 + 白色内圆。
  *
- * 自动模式下按钮不参与点击（由定时器驱动），半透明表示不可点；
- * 识别中时内圆变成一个小方块/进度指示。
+ * [externallyDriven] 为 true 时（自动模式 / 流式分析）按钮不参与点击，
+ * 由相机那边驱动，半透明表示不可点；识别中时内圆变成一个小方块/进度指示。
  */
 @Composable
 private fun ShutterButton(
     status: OcrStatus,
     enabled: Boolean,
-    autoMode: Boolean,
+    externallyDriven: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val busy = status is OcrStatus.Recognizing
-    val clickable = enabled && !busy && !autoMode
-    // 自动模式由定时器驱动，按钮只做状态指示，所以调暗
-    val contentAlpha = if (autoMode) 0.35f else 1f
+    val clickable = enabled && !busy && !externallyDriven
+    // 外部驱动时按钮只做状态指示，所以调暗
+    val contentAlpha = if (externallyDriven) 0.35f else 1f
 
     Box(
         contentAlignment = Alignment.Center,
@@ -919,6 +1121,44 @@ private fun ShutterButton(
                 modifier = Modifier.size(18.dp)
             )
         }
+    }
+}
+
+/**
+ * 识别模式选择行，位置参照相机 App 的「专业 / 录像 / 人像」那一排。
+ *
+ * 纯文字、可横向滑动、选中项用强调色高亮（和其它选中态一致）。
+ */
+@Composable
+private fun PipelineModeRow(
+    current: Pipeline,
+    onSelect: (Pipeline) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(bottom = 8.dp)
+    ) {
+        // 左右各垫一点，让首尾项不要贴边
+        Spacer(modifier = Modifier.width(14.dp))
+        Pipeline.entries.forEach { item ->
+            val selected = item == current
+            Text(
+                text = item.label,
+                color = if (selected) XiaomiYellow else Color.White.copy(alpha = 0.55f),
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .clickable { onSelect(item) }
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(14.dp))
     }
 }
 
@@ -1772,12 +2012,14 @@ private fun StatusBanner(status: OcrStatus, modifier: Modifier = Modifier) {
 
 /**
  * 比对结果面板：逐行显示，命中的行打勾并标出命中的表格项。
+ *
+ * [continuous] 表示相机在持续推帧（自动模式 / 流式分析），此时「重拍」没有意义。
  */
 @Composable
 private fun ResultPanel(
     matches: List<LineMatch>,
     ocrFailed: Boolean,
-    autoMode: Boolean,
+    continuous: Boolean,
     onRetake: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1839,8 +2081,8 @@ private fun ResultPanel(
                 }
             }
 
-            // 自动模式下持续在拍，“重拍”没有意义
-            if (!autoMode) {
+            // 持续推帧时“重拍”没有意义
+            if (!continuous) {
                 Text(
                     text = "重拍",
                     color = XiaomiYellow,
@@ -1938,11 +2180,17 @@ private fun PermissionRationale(
  *   CameraX 自动处理 onStart/onStop/onDestroy，不用手写开关相机。
  * - [PreviewView] 是传统 View，用 [AndroidView] 包进 Compose。
  * - [ImageCapture] 的 targetRotation 跟随屏幕旋转，拍出来的图才是正的。
+ *
+ * 流式分析（[Pipeline.Analysis]）用 [ImageAnalysis] 替代 ImageCapture：
+ * KEEP_ONLY_LATEST + 上一帧 close 之后才推下一帧，所以是「识别完立刻拿最新的一帧」，
+ * **不看**手动/自动开关——进了这条管线就一直处理。
  */
 @Composable
 fun CameraPreview(
     captureExecutor: ExecutorService,
+    pipeline: Pipeline,
     onImageCaptureReady: (ImageCapture) -> Unit,
+    onFrame: (ImageProxy) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -1956,9 +2204,11 @@ fun CameraPreview(
 
     AndroidView(factory = { previewView }, modifier = modifier)
 
-    DisposableEffect(lifecycleOwner) {
+    // pipeline 作为 key：切换管线时重建用例并重新绑定
+    DisposableEffect(lifecycleOwner, pipeline) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         var boundCameraProvider: ProcessCameraProvider? = null
+        var analysis: ImageAnalysis? = null
 
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
@@ -1967,23 +2217,72 @@ fun CameraPreview(
             val preview = Preview.Builder().build().also {
                 it.surfaceProvider = previewView.surfaceProvider
             }
-            val imageCapture = ImageCapture.Builder()
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                .setTargetRotation(previewView.display.rotation)
-                .build()
 
             cameraProvider.unbindAll()
-            cameraProvider.bindToLifecycle(
-                lifecycleOwner,
-                CameraSelector.DEFAULT_BACK_CAMERA,
-                preview,
-                imageCapture
-            )
-            onImageCaptureReady(imageCapture)
+
+            if (pipeline.usesAnalysis) {
+                // D 流式分析：由相机推帧，KEEP_ONLY_LATEST 保证不排队堆积
+                analysis = ImageAnalysis.Builder()
+                    .setResolutionSelector(
+                        ResolutionSelector.Builder()
+                            .setResolutionStrategy(
+                                ResolutionStrategy(
+                                    Pipeline.ANALYSIS_SIZE,
+                                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                                )
+                            )
+                            .build()
+                    )
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setTargetRotation(previewView.display.rotation)
+                    .build()
+                    .also { useCase ->
+                        useCase.setAnalyzer(captureExecutor) { image ->
+                            // 流式分析就是「一直处理」：手动/自动开关对这条管线不生效
+                            onFrame(image)
+                        }
+                    }
+
+                cameraProvider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    analysis
+                )
+            } else {
+                // A/B/C/标准：ImageCapture。C 走 ResolutionSelector 让 HAL 直接出小图
+                val imageCapture = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                    .setTargetRotation(previewView.display.rotation)
+                    .apply {
+                        if (pipeline == Pipeline.SmallCapture) {
+                            setResolutionSelector(
+                                ResolutionSelector.Builder()
+                                    .setResolutionStrategy(
+                                        ResolutionStrategy(
+                                            Pipeline.SMALL_CAPTURE_SIZE,
+                                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                                        )
+                                    )
+                                    .build()
+                            )
+                        }
+                    }
+                    .build()
+
+                cameraProvider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    imageCapture
+                )
+                onImageCaptureReady(imageCapture)
+            }
         }, ContextCompat.getMainExecutor(context))
 
         onDispose {
-            // 页面销毁时解绑，避免相机被占用/回调打到已销毁的 View 上
+            // 页面销毁 / 切换管线时解绑，避免相机被占用或回调打到已销毁的 View 上
+            analysis?.clearAnalyzer()
             boundCameraProvider?.unbindAll()
         }
     }

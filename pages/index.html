@@ -315,6 +315,11 @@
       <p>默认手动点按快门；切到自动则每秒抓一帧，适合流水线式扫一堆标签。</p>
     </div>
     <div class="card">
+      <span class="ic">⚡</span>
+      <h4>五种识别管线</h4>
+      <p>底部一排可选：标准 / 省内存 / 降采样 / 小图直出 / 流式分析，按设备性能和认字精度自己取舍。流式分析由相机连续推帧，识别完立刻处理下一帧，不用再手动点。</p>
+    </div>
+    <div class="card">
       <span class="ic">🔍</span>
       <h4>离线 OCR</h4>
       <p>Google ML Kit 拉丁文模型随包分发，不联网也能识别英文和数字。</p>
@@ -327,7 +332,7 @@
     <div class="card">
       <span class="ic">🗂️</span>
       <h4>内部相册</h4>
-      <p>每次拍摄自动存档（预览图 + 识别结果），可回看、可点开看逐行结果。</p>
+      <p>拍摄自动存档（预览图 + 识别结果），可回看、可点开看逐行结果。连续扫描时按 3 秒节流，不会把相册撑爆。</p>
     </div>
     <div class="card">
       <span class="ic">📋</span>
@@ -342,7 +347,7 @@
   <p class="sub">四步，全自动。</p>
   <div class="flow">
     <div class="step"><div class="n">1</div><h4>取景</h4><p>相机实时预览，对准要核对的内容</p></div>
-    <div class="step"><div class="n">2</div><h4>拍摄</h4><p>手动点快门，或自动每秒一帧</p></div>
+    <div class="step"><div class="n">2</div><h4>拍摄</h4><p>手动点快门、自动每秒一帧，或切「流式分析」连续推帧</p></div>
     <div class="step"><div class="n">3</div><h4>识别</h4><p>ML Kit 把画面里的文字逐行读出来</p></div>
     <div class="step"><div class="n">4</div><h4>比对</h4><p>逐行和表格比，命中项高亮打勾</p></div>
   </div>
@@ -540,7 +545,12 @@ Production Date</code></pre>
 
   <details>
     <summary>为什么默认是手动模式？</summary>
-    <p>自动模式每秒抓一帧，适合连续扫很多标签，但耗电快、相册也会很快堆满。默认手动更可控，需要时右下角切一下即可。</p>
+    <p>手动更可控：只有按下快门那一下才识别。需要连续扫很多标签时，可以把底部的识别管线切到「流式分析」——相机会一直推帧、识别完立刻处理下一帧，而且它不看手动/自动开关，切过去就开始连续工作。</p>
+  </details>
+
+  <details>
+    <summary>连续扫描会不会把相册撑爆？</summary>
+    <p>不会。连续推帧（自动模式 / 流式分析）时相册按两条规则节流：<strong>画面和上次存过的完全一样就跳过</strong>、<strong>距上次存不足 3 秒也跳过</strong>。所以相册是「每 3 秒给当前画面拍一张快照」，不是每一帧都存——实测连续扫 53 秒只多 18 张。手动拍摄不受限制，每按一次快门都留一张。上限 200 张（约 8.8MB），超过后从最早的开始删。</p>
   </details>
 
   <details>
