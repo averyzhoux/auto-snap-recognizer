@@ -54,6 +54,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -807,6 +808,50 @@ private fun GalleryScreen(
     }
 }
 
+/**
+ * 纵览卡片里每格最多显示几行识别结果（分界线上下各算一次）。
+ */
+private const val CARD_ROWS = 3
+
+/**
+ * 相册里的分界线：把「命中的结果」和「其余识别结果」分开。
+ */
+@Composable
+private fun HitDivider(modifier: Modifier = Modifier) {
+    HorizontalDivider(
+        color = Color.White.copy(alpha = 0.18f),
+        thickness = 1.dp,
+        modifier = modifier.padding(vertical = 6.dp)
+    )
+}
+
+/**
+ * 纵览卡片里的一行识别结果。
+ *
+ * [hit] 为 true 时用小米黄强调，并用 [note] 标出命中的是表格里的哪一项。
+ */
+@Composable
+private fun CardLine(text: String, hit: Boolean, note: String? = null) {
+    Column(modifier = Modifier.padding(top = 2.dp)) {
+        Text(
+            text = if (hit) "✓ $text" else text,
+            color = if (hit) XiaomiYellow else Color.White.copy(alpha = 0.75f),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (note != null) {
+            Text(
+                text = "→ $note",
+                color = XiaomiYellow.copy(alpha = 0.75f),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
 /** 相册里的一格：缩略图 + 命中情况 + 识别到的前几行文字。点开看详情。 */
 @Composable
 private fun GalleryCard(
@@ -860,7 +905,7 @@ private fun GalleryCard(
                     modifier = Modifier.padding(top = 4.dp)
                 )
 
-                if (item.lines.isEmpty()) {
+                if (item.matches.isEmpty()) {
                     Text(
                         text = "没识别到文字",
                         color = Color.White.copy(alpha = 0.4f),
@@ -868,16 +913,18 @@ private fun GalleryCard(
                         modifier = Modifier.padding(top = 4.dp)
                     )
                 } else {
-                    // 只展示前几行，避免每格太高
-                    item.lines.take(3).forEach { line ->
-                        Text(
-                            text = line,
-                            color = Color.White.copy(alpha = 0.75f),
-                            style = MaterialTheme.typography.labelSmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 2.dp)
-                        )
+                    // 分界线之上：命中结果的**副本**，方便一眼看到重点
+                    val hits = item.matches.filter { it.isHit }
+                    if (hits.isNotEmpty()) {
+                        hits.take(CARD_ROWS).forEach { match ->
+                            CardLine(text = match.rawText, hit = true, note = match.entry?.name)
+                        }
+                        HitDivider()
+                    }
+
+                    // 分界线之下：照常列出全部识别结果（命中的也在里面）
+                    item.lines.take(CARD_ROWS).forEach { line ->
+                        CardLine(text = line, hit = false)
                     }
                 }
             }
@@ -1025,7 +1072,8 @@ private fun GalleryDetailScreen(
                     )
                 }
 
-                // 逐行结果，和拍摄页同一个组件
+                // 逐行结果，和拍摄页同一个组件。
+                // 分界线之上先放命中的，之下再列其余的。
                 if (item.matches.isEmpty()) {
                     Text(
                         text = "这一张没有识别到文字",
@@ -1034,6 +1082,19 @@ private fun GalleryDetailScreen(
                         modifier = Modifier.padding(top = 10.dp)
                     )
                 } else {
+                    // 分界线之上：命中结果的**副本**
+                    val hits = item.matches.filter { it.isHit }
+                    if (hits.isNotEmpty()) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(top = 10.dp)
+                        ) {
+                            hits.forEach { match -> MatchRow(match) }
+                        }
+                        HitDivider()
+                    }
+
+                    // 分界线之下：照常显示完整的逐行结果（命中的也在里面）
                     Column(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.padding(top = 10.dp)
