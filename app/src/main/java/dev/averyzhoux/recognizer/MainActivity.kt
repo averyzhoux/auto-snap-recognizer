@@ -114,8 +114,23 @@ private val SHUTTER_SIZE = 76.dp
 /** 缩略图槽位尺寸，左右各留一个保证快门在视觉上居中 */
 private val THUMBNAIL_SLOT = 56.dp
 
-/** 小米相机选中态的那个黄 */
+/** 小米相机选中态的那个黄：也用于「近似命中」 */
 private val XiaomiYellow = Color(0xFFFFC800)
+
+/** 「完全相同命中」用的绿。刻意和黄色区分开，一眼能看出这个命中是否精确 */
+private val MatchGreen = Color(0xFF3DDC84)
+
+/**
+ * 命中项该用什么颜色：
+ * - 完全相同（归一化后一致）→ 绿色
+ * - 近似（包含 / 模糊 / 别名）→ 黄色
+ * - 没命中 → null，由调用方决定灰显
+ */
+private fun matchColor(match: LineMatch): Color? = when {
+    !match.isHit -> null
+    match.isExact -> MatchGreen
+    else -> XiaomiYellow
+}
 
 /**
  * 存下来的预览图宽度。
@@ -1037,11 +1052,12 @@ private fun HitDivider(modifier: Modifier = Modifier) {
  * [hit] 为 true 时用小米黄强调，并用 [note] 标出命中的是表格里的哪一项。
  */
 @Composable
-private fun CardLine(text: String, hit: Boolean, note: String? = null) {
+private fun CardLine(text: String, color: Color? = null, note: String? = null) {
+    val hit = color != null
     Column(modifier = Modifier.padding(top = 2.dp)) {
         Text(
             text = if (hit) "✓ $text" else text,
-            color = if (hit) XiaomiYellow else Color.White.copy(alpha = 0.75f),
+            color = color ?: Color.White.copy(alpha = 0.75f),
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -1049,7 +1065,7 @@ private fun CardLine(text: String, hit: Boolean, note: String? = null) {
         if (note != null) {
             Text(
                 text = "→ $note",
-                color = XiaomiYellow.copy(alpha = 0.75f),
+                color = (color ?: XiaomiYellow).copy(alpha = 0.75f),
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -1123,14 +1139,18 @@ private fun GalleryCard(
                     val hits = item.matches.filter { it.isHit }
                     if (hits.isNotEmpty()) {
                         hits.take(CARD_ROWS).forEach { match ->
-                            CardLine(text = match.rawText, hit = true, note = match.entry?.name)
+                            CardLine(
+                                text = match.rawText,
+                                color = matchColor(match),
+                                note = match.entry?.name
+                            )
                         }
                         HitDivider()
                     }
 
                     // 分界线之下：照常列出全部识别结果（命中的也在里面）
                     item.lines.take(CARD_ROWS).forEach { line ->
-                        CardLine(text = line, hit = false)
+                        CardLine(text = line)
                     }
                 }
             }
@@ -1839,19 +1859,19 @@ private fun ResultPanel(
 /** 单行的比对结果：命中 = 高亮 + 打勾，未命中 = 灰显。 */
 @Composable
 private fun MatchRow(match: LineMatch) {
-    // 命中用小米相机那个黄色，和整体风格统一
-    val hitColor = XiaomiYellow
+    // 完全相同 → 绿，近似 → 黄，未命中 → 灰
+    val color = matchColor(match)
     Row(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .background(if (match.isHit) hitColor.copy(alpha = 0.16f) else Color.Transparent)
+            .background(color?.copy(alpha = 0.16f) ?: Color.Transparent)
             .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {
         Text(
             text = if (match.isHit) "✓" else "·",
-            color = if (match.isHit) hitColor else Color.White.copy(alpha = 0.35f),
+            color = color ?: Color.White.copy(alpha = 0.35f),
             style = MaterialTheme.typography.bodyMedium
         )
         Column(modifier = Modifier.weight(1f)) {
@@ -1871,7 +1891,7 @@ private fun MatchRow(match: LineMatch) {
                             append("）")
                         }
                     },
-                    color = hitColor,
+                    color = color ?: XiaomiYellow,
                     style = MaterialTheme.typography.labelSmall
                 )
             }

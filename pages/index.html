@@ -122,6 +122,10 @@
     background: rgba(255, 200, 0, .12);
     border-radius: 5px; padding: 3px 5px;
   }
+  .ph-hit.exact {           /* 完全相同命中：绿色 */
+    color: #3ddc84;
+    background: rgba(61, 220, 132, .14);
+  }
   .ph-divider { height: 1px; background: rgba(255,255,255,.18); margin: 6px 0; }
   .ph-miss { color: rgba(255,255,255,.55); }
   .ph-bar {
@@ -280,6 +284,7 @@
       <div class="ph-spacer"></div>
       <div class="ph-panel">
         <div class="count">命中 <b>1</b> / 11</div>
+        <div class="ph-hit exact">✓ AZ-Recongnizer<br>→ AZ-Recongnizer</div>
         <div class="ph-hit">✓ Alibaba Manufacturer Directory<br>→ Manufacturer（近似 90%）</div>
         <div class="ph-divider"></div>
         <div class="ph-miss">· Ctrl</div>
@@ -363,6 +368,12 @@
     <strong>命中 X / Y 里的 Y 是「这一帧识别到的行数」</strong>，不是表格条目数。
     表格有多少条看右上角那个胶囊。
   </div>
+
+  <p class="muted tiny">
+    命中行的颜色分两种：<strong style="color:#3ddc84">绿色 = 完全相同</strong>，
+    <strong style="color:#ffc800">黄色 = 近似</strong>（包含关系或模糊匹配，末尾会标出「近似 83%」）。
+    一眼能看出这个命中是否精确。
+  </p>
 </section>
 
 <section id="dataset" class="wrap">
