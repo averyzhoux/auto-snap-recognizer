@@ -7,7 +7,9 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import android.util.LruCache
 import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -27,16 +29,22 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -54,6 +62,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -63,6 +72,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -73,6 +83,12 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import java.util.Date
+import java.io.File
+import java.util.Locale
+import java.text.SimpleDateFormat
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -91,14 +107,26 @@ private val THUMBNAIL_SLOT = 56.dp
 /** 小米相机选中态的那个黄 */
 private val XiaomiYellow = Color(0xFFFFC800)
 
-/** 缩略图宽度，避免把全分辨率 Bitmap（十几 MB）留在内存里 */
-private const val THUMBNAIL_WIDTH = 160
+/**
+ * 存下来的预览图宽度。
+ *
+ * 480px 的 JPEG 约 40KB/张，写在磁盘上（见 [GalleryStore]）；
+ * 解码进内存时用 RGB_565，约 600KB/张，且只有最近看过的
+ * [THUMBNAIL_CACHE_SIZE] 张会被缓存。
+ */
+private const val THUMBNAIL_WIDTH = 480
 
 /** 摄像头拍到的原始帧（已是给 ML Kit 用的方向），bitmap 是缩小过的缩略图。 */
 private data class CapturedFrame(val bitmap: Bitmap, val rotationDegrees: Int)
 
 /** 一次识别 + 比对的结果。 */
 private data class MatchResult(val matches: List<LineMatch>, val fromCache: Boolean)
+
+/** 内存里最多同时缓存几张已解码的预览图（每张约 600KB，12 张约 7MB） */
+private const val THUMBNAIL_CACHE_SIZE = 12
+
+/** 当前显示哪一屏 */
+private enum class Screen { Camera, Gallery, Detail }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -194,8 +222,8 @@ fun CameraOcrScreen() {
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var status by remember { mutableStateOf<OcrStatus>(OcrStatus.Idle) }
 
-    // 默认自动
-    var autoMode by remember { mutableStateOf(true) }
+    // 默认手动：点一下快门才拍一帧
+    var autoMode by remember { mutableStateOf(false) }
 
     // 同一时刻只允许一帧在识别；1 秒一帧时识别可能还没结束，靠它跳过这一拍
     val busy = remember { AtomicBoolean(false) }
@@ -206,6 +234,27 @@ fun CameraOcrScreen() {
     // 相机还没绑定完成就拍照时会报错，记下时间让自动循环稍后重试。
     // 手动模式下没有循环接应，所以这种情况直接忽略，不弹错误。
     var transientErrorAt by remember { mutableStateOf<Long?>(null) }
+
+    // 内部相册：元数据在内存、图片在磁盘
+    val galleryStore = remember { GalleryStore(context.applicationContext) }
+    // 已解码预览图的小缓存，只留最近看过的几张，避免整本相册都占内存。
+    //
+    // 刻意**不**在 entryRemoved 里 recycle：被挤出缓存的位图可能还被某个正在
+    // 合成（或预取）的网格卡片持有，回收了它再绘制会抛
+    // “trying to use a recycled bitmap”。交给 GC 释放即可。
+    val thumbnailCache = remember { LruCache<String, Bitmap>(THUMBNAIL_CACHE_SIZE) }
+    val gallery = remember { mutableStateListOf<GalleryItem>() }
+    var screen by remember { mutableStateOf(Screen.Camera) }
+    // 相册里正在看的那张（null = 没在看详情）
+    var openedItem by remember { mutableStateOf<GalleryItem?>(null) }
+
+    // 启动时把磁盘上已有的相册读进来（只读 JSON，不解码图片）
+    LaunchedEffect(Unit) {
+        val loaded = withContext(Dispatchers.IO) { galleryStore.loadAll() }
+        gallery.clear()
+        gallery.addAll(loaded)
+        Log.d(TAG, "gallery loaded ${loaded.size} items from disk")
+    }
 
     // 抽成函数，给自动循环和手动按钮共用
     val takePicture: (ImageCapture) -> Unit = { useCase ->
@@ -225,6 +274,8 @@ fun CameraOcrScreen() {
                         )
 
                         val signature = frame.signature()
+                        // 缩略图：状态栏和相册都只用它，12MB 的原图不进任何状态
+                        val thumb = bitmap.scaledToWidth(THUMBNAIL_WIDTH)
                         val cached = lastMatches
                         val reuse = signature == lastSignature && cached != null
 
@@ -232,15 +283,32 @@ fun CameraOcrScreen() {
                             // 画面没变，直接复用上次的比对结果，省掉一次 ML Kit 调用
                             Log.d(TAG, "frame unchanged, reuse cached result")
                             lastSignature = signature
-                            status = OcrStatus.Recognized(bitmap, cached, fromCache = true)
+                            status = OcrStatus.Recognized(thumb, cached, fromCache = true)
+                            saveToGallery(
+                                store = galleryStore,
+                                gallery = gallery,
+                                preview = thumb,
+                                lines = cached.map { it.rawText },
+                                matches = cached
+                            )
+                            // 大图用完立刻回收，不再让它挂在闭包里等 GC
+                            bitmap.recycle()
                             busy.set(false)
                         } else {
-                            val thumb = bitmap.scaledToWidth(THUMBNAIL_WIDTH)
                             status = OcrStatus.Recognizing(thumb, cached)
-                            recognize(textRecognizer, matcher, bitmap, rotationDegrees) { result ->
+                            recognize(textRecognizer, matcher, bitmap, rotationDegrees) { lines, result ->
                                 lastSignature = signature
                                 lastMatches = result
                                 status = OcrStatus.Recognized(thumb, result, fromCache = false)
+                                saveToGallery(
+                                    store = galleryStore,
+                                    gallery = gallery,
+                                    preview = thumb,
+                                    lines = lines,
+                                    matches = result
+                                )
+                                // 识别已结束，原图可以回收
+                                bitmap.recycle()
                                 busy.set(false)
                             }
                         }
@@ -270,9 +338,11 @@ fun CameraOcrScreen() {
 
     // 自动模式：每 1 秒抓一帧。下面这些 key 任一变化就重启循环，
     // Composable 离开时循环自动取消；transientErrorAt 变化会把循环从 delay 里唤醒。
-    LaunchedEffect(autoMode, imageCapture, transientErrorAt) {
+    LaunchedEffect(autoMode, imageCapture, transientErrorAt, screen) {
         val useCase = imageCapture ?: return@LaunchedEffect
         if (!autoMode) return@LaunchedEffect
+        // 看相册/看详情时暂停拍摄，别一边翻一边往里塞新照片
+        if (screen != Screen.Camera) return@LaunchedEffect
 
         // 首次进入时给相机一点绑定时间，避免开局必失败
         delay(300)
@@ -341,13 +411,32 @@ fun CameraOcrScreen() {
                 .windowInsetsPadding(WindowInsets.navigationBars)
                 .padding(bottom = 18.dp, start = 28.dp, end = 28.dp)
         ) {
-            // 左侧：最近一帧缩略图（没有就是空占位，保证快门居中）
+            // 左侧：最近一帧缩略图，点一下进内部相册。
+            // 刚启动还没有实时帧时，回落到相册里最新的一张（从磁盘按需解码），
+            // 否则每次重开 APP 这个位置都是空的。
             Box(
                 modifier = Modifier.size(THUMBNAIL_SLOT),
                 contentAlignment = Alignment.Center
             ) {
-                val bitmap = status.bitmapOrNull()
-                if (bitmap != null) Thumbnail(bitmap = bitmap)
+                val live = status.bitmapOrNull()
+                if (live != null) {
+                    Thumbnail(bitmap = live, onClick = { screen = Screen.Gallery })
+                } else {
+                    // gallery 是最新在前
+                    val newest = gallery.firstOrNull()
+                    if (newest != null) {
+                        val decoded = rememberGalleryBitmap(newest, thumbnailCache)
+                        if (decoded != null) {
+                            Thumbnail(bitmap = decoded, onClick = { screen = Screen.Gallery })
+                        } else {
+                            ImagePlaceholder(
+                                modifier = Modifier
+                                    .size(THUMBNAIL_SLOT)
+                                    .clip(RoundedCornerShape(10.dp))
+                            )
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.weight(1f))
@@ -371,6 +460,44 @@ fun CameraOcrScreen() {
                     lastMatches = null
                 }
             )
+        }
+
+        // 相册 / 照片详情：盖住取景画面
+        when (screen) {
+            Screen.Camera -> Unit
+
+            Screen.Gallery -> GalleryScreen(
+                items = gallery,
+                thumbnailCache = thumbnailCache,
+                onClose = { screen = Screen.Camera },
+                onOpen = { item ->
+                    openedItem = item
+                    screen = Screen.Detail
+                },
+                onClear = {
+                    // 磁盘和内存都要清
+                    gallery.forEach { thumbnailCache.remove(it.imageFile.path) }
+                    galleryStore.clear()
+                    gallery.clear()
+                    openedItem = null
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+
+            Screen.Detail -> {
+                val item = openedItem
+                if (item == null) {
+                    // 详情对应的那张已经被清掉了，退回相册
+                    screen = Screen.Gallery
+                } else {
+                    GalleryDetailScreen(
+                        item = item,
+                        thumbnailCache = thumbnailCache,
+                        onBack = { screen = Screen.Gallery },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
         }
     }
 }
@@ -424,7 +551,7 @@ private fun recognize(
     matcher: OcrMatcher,
     bitmap: Bitmap,
     rotationDegrees: Int,
-    onResult: (List<LineMatch>) -> Unit
+    onResult: (lines: List<String>, matches: List<LineMatch>) -> Unit
 ) {
     // 第二个参数就是旋转角度，交给 ML Kit 摆正
     val inputImage = InputImage.fromBitmap(bitmap, rotationDegrees)
@@ -449,13 +576,42 @@ private fun recognize(
                 )
             }
 
-            onResult(matches)
+            onResult(lines, matches)
         }
         .addOnFailureListener { error ->
             Log.e(TAG, "OCR failed", error)
             // 识别失败不算致命：自动模式下下一帧会重试，这里保留上一批结果
-            onResult(emptyList())
+            onResult(emptyList(), emptyList())
         }
+}
+
+/**
+ * 把这一张写进磁盘相册，并插到列表最前面。
+ *
+ * 这个方法是在 [captureExecutor] 的线程上调用的（拍照回调本身就在后台），
+ * 所以这里的文件 I/O 不会卡 UI。
+ */
+private fun saveToGallery(
+    store: GalleryStore,
+    gallery: MutableList<GalleryItem>,
+    preview: Bitmap,
+    lines: List<String>,
+    matches: List<LineMatch>
+) {
+    val item = store.save(
+        preview = preview,
+        timeMillis = System.currentTimeMillis(),
+        lines = lines,
+        matches = matches
+    ) ?: return
+
+    // 最新的排最前
+    gallery.add(0, item)
+
+    // 磁盘上超出上限的已被 store 删掉，内存列表跟着裁一下
+    while (gallery.size > MAX_GALLERY_ITEMS) {
+        gallery.removeAt(gallery.lastIndex)
+    }
 }
 
 // ---------- UI ----------
@@ -544,18 +700,350 @@ private fun ShutterButton(
     }
 }
 
-/** 左下角最近一帧缩略图。 */
+/** 左下角最近一帧缩略图，点一下进内部相册。 */
 @Composable
-private fun Thumbnail(bitmap: Bitmap, modifier: Modifier = Modifier) {
+private fun Thumbnail(
+    bitmap: Bitmap,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     Image(
         bitmap = bitmap.asImageBitmap(),
-        contentDescription = "最近一帧",
+        contentDescription = "打开内部相册",
         contentScale = ContentScale.Crop,
         modifier = modifier
             .size(THUMBNAIL_SLOT)
             .clip(RoundedCornerShape(10.dp))
             .border(1.dp, Color.White.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
     )
+}
+
+/**
+ * 内部相册：两列网格，每格显示缩略图 + 识别结果摘要。
+ *
+ * 数据全在内存里（[GalleryItem] 只存缩略图），不落盘，退出应用即清空。
+ */
+@Composable
+private fun GalleryScreen(
+    items: List<GalleryItem>,
+    thumbnailCache: LruCache<String, Bitmap>,
+    onClose: () -> Unit,
+    onOpen: (GalleryItem) -> Unit,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // 系统返回键也用来关相册
+    BackHandler(onBack = onClose)
+
+    Surface(color = Color(0xFF101012), modifier = modifier) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+            ) {
+                Text(
+                    text = "‹ 返回",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable(onClick = onClose)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = "相册 ${items.size} 张",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = "清空",
+                    color = if (items.isEmpty()) Color.White.copy(alpha = 0.3f) else XiaomiYellow,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable(enabled = items.isNotEmpty(), onClick = onClear)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+            }
+
+            if (items.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "还没有照片\n拍一张就会出现在这里",
+                        color = Color.White.copy(alpha = 0.5f),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    contentPadding = PaddingValues(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                ) {
+                    // 最新的排最前
+                    items(items, key = { it.id }) { item ->
+                        GalleryCard(
+                            item = item,
+                            thumbnailCache = thumbnailCache,
+                            onClick = { onOpen(item) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 相册里的一格：缩略图 + 命中情况 + 识别到的前几行文字。点开看详情。 */
+@Composable
+private fun GalleryCard(
+    item: GalleryItem,
+    thumbnailCache: LruCache<String, Bitmap>,
+    onClick: () -> Unit
+) {
+    Surface(
+        color = Color.White.copy(alpha = 0.06f),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Column {
+            val preview = rememberGalleryBitmap(item, thumbnailCache)
+            if (preview != null) {
+                Image(
+                    bitmap = preview.asImageBitmap(),
+                    contentDescription = "第 ${item.id} 张",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(140.dp)
+                )
+            } else {
+                ImagePlaceholder(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(140.dp)
+                )
+            }
+
+            Column(modifier = Modifier.padding(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "#${item.id}",
+                        color = Color.White.copy(alpha = 0.5f),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text(
+                        text = "${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(item.timeMillis))}",
+                        color = Color.White.copy(alpha = 0.5f),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+
+                Text(
+                    text = "命中 ${item.hitCount} / ${item.lineCount}",
+                    color = if (item.hitCount > 0) XiaomiYellow else Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+
+                if (item.lines.isEmpty()) {
+                    Text(
+                        text = "没识别到文字",
+                        color = Color.White.copy(alpha = 0.4f),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                } else {
+                    // 只展示前几行，避免每格太高
+                    item.lines.take(3).forEach { line ->
+                        Text(
+                            text = line,
+                            color = Color.White.copy(alpha = 0.75f),
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 按需解码一张相册预览图。
+ *
+ * - 先查 [cache]，命中就直接返回（滚动/来回切不会反复解码）
+ * - 没命中就丢到 IO 线程解码，期间返回 null（调用方显示占位）
+ * - 图片在磁盘上，所以**内存里只会有最近看过的几张**
+ */
+@Composable
+private fun rememberGalleryBitmap(
+    item: GalleryItem,
+    cache: LruCache<String, Bitmap>
+): Bitmap? {
+    val path = item.imageFile.path
+    var bitmap by remember(path) { mutableStateOf(cache.get(path)) }
+
+    LaunchedEffect(path) {
+        if (bitmap == null && item.imageFile.exists()) {
+            val decoded = withContext(Dispatchers.IO) { decodePreview(item.imageFile) }
+            if (decoded != null) {
+                cache.put(path, decoded)
+                bitmap = decoded
+            }
+        }
+    }
+    return bitmap
+}
+
+/** 解码还没完成时的占位块，避免布局跳动。 */
+@Composable
+private fun ImagePlaceholder(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier.background(Color.White.copy(alpha = 0.06f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "载入中…",
+            color = Color.White.copy(alpha = 0.3f),
+            style = MaterialTheme.typography.labelSmall
+        )
+    }
+}
+
+/**
+ * 相册里某一张的详情：大图 + **完整的**识别结果。
+ *
+ * 和拍摄页一样用 [MatchRow] 逐行展示，命中的行高亮打勾并标出命中的表格项，
+ * 区别只是这里的图是当时存下来的预览图，且文字区可以整屏滚动。
+ */
+@Composable
+private fun GalleryDetailScreen(
+    item: GalleryItem,
+    thumbnailCache: LruCache<String, Bitmap>,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    BackHandler(onBack = onBack)
+
+    Surface(color = Color(0xFF101012), modifier = modifier) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // 顶栏
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+            ) {
+                Text(
+                    text = "‹ 相册",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable(onClick = onBack)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = "#${item.id}  " +
+                        SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(item.timeMillis)),
+                    color = Color.White.copy(alpha = 0.6f),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 20.dp)
+            ) {
+                // 大图。磁盘上的预览图（480px）按需解码。
+                // 用 aspectRatio 让图片框贴合图片本身的比例，
+                // 否则框会很宽很矮，ContentScale.Fit 只按高度缩放，图会变得很小。
+                val detailBitmap = rememberGalleryBitmap(item, thumbnailCache)
+                if (detailBitmap != null) {
+                    Image(
+                        bitmap = detailBitmap.asImageBitmap(),
+                        contentDescription = "第 ${item.id} 张",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(
+                                detailBitmap.width.toFloat() / detailBitmap.height.toFloat()
+                            )
+                            .clip(RoundedCornerShape(14.dp))
+                    )
+                } else {
+                    ImagePlaceholder(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(3f / 4f)
+                            .clip(RoundedCornerShape(14.dp))
+                    )
+                }
+
+                // 命中统计
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 16.dp)
+                ) {
+                    Text(
+                        text = "命中 ",
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = "${item.hitCount}",
+                        color = XiaomiYellow,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = " / ${item.lineCount}",
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                }
+
+                // 逐行结果，和拍摄页同一个组件
+                if (item.matches.isEmpty()) {
+                    Text(
+                        text = "这一张没有识别到文字",
+                        color = Color.White.copy(alpha = 0.5f),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+                } else {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(top = 10.dp)
+                    ) {
+                        item.matches.forEach { match -> MatchRow(match) }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /** 顶部状态胶囊。 */
