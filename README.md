@@ -5,3 +5,241 @@
 相机取景 → 拍照 → OCR → 跟本地表格比对 → 命中项高亮提示。支持手动单拍和每秒自动连拍。
 
 Coded by `DeepSeek` `DeepSeek-Harness`.
+
+---
+
+## 功能
+
+| 模块 | 说明 |
+|------|------|
+| **相机预览** | CameraX 整屏取景，底部小米相机风格控制栏 |
+| **拍摄模式** | **手动**（默认，点快门拍一帧）/ **自动**（每 1 秒一帧） |
+| **文字识别** | Google ML Kit 文字识别（拉丁文模型，英文 + 数字，**离线可用**） |
+| **表格比对** | 精确 → 包含 → 模糊（编辑距离）三层策略，逐行给出命中结果 |
+| **内部相册** | 每次拍摄自动存档（预览图 + 识别结果），网格纵览 + 点开看详情 |
+| **数据集管理** | 从文件或粘贴导入表格，可保存多个随时切换，跨重启保留 |
+
+### 界面
+
+
+左上角状态胶囊共 8 种文案：
+
+| 状态 | 显示 |
+|------|------|
+| 空闲 / 重拍后 | `对准目标，等待识别` |
+| 识别中（首次，无历史结果） | `正在识别文字…` |
+| 识别中（有上一帧结果） | `命中 3 / 20（更新中…）` |
+| 识别完成，图里没字 | `没识别到文字` |
+| 识别完成，有命中 | `命中 3 / 20` ／ `命中 3 / 20（画面未变）` |
+| 识别完成，有行但零命中 | `无命中 · 20 行` |
+| **OCR 引擎出错** | `OCR 识别失败` |
+| 拍照/处理异常 | `失败：<消息>` |
+
+> `命中 X / Y` 中 **X = 命中的行数，Y = 这一帧识别到的总行数**（不是表格条目数）。
+> 表格条目数显示在右上角胶囊里。
+
+---
+
+## 快速开始
+
+### 环境要求
+
+| 项 | 版本 | 说明 |
+|----|------|------|
+| JDK | **25** | ⚠️ 必须。项目在 `gradle/gradle-daemon-jvm.properties` 里把 Gradle daemon 钉死在 25 |
+| Android SDK | Platform **37** | `compileSdk = 37` |
+| Gradle | 9.6.0 | 用仓库自带的 `./gradlew` 即可 |
+| AGP / Kotlin | 9.4.0 / 2.2.10 | 见 `gradle/libs.versions.toml` |
+
+### 构建
+
+**用 Android Studio**：直接点 Run 即可。Studio 自带的 JBR 就是 Java 25，满足要求。
+
+**命令行**：必须显式把 `JAVA_HOME` 指到 JDK 25，否则 Gradle 会尝试从 foojay 下载工具链并失败。
+
+```bash
+# Android Studio 自带的 JBR 就是 Java 25，直接用它最省事
+JAVA_HOME="$HOME/下载/android-studio/jbr" ./gradlew :app:assembleDebug
+
+# 或你系统里任意一个 JDK 25
+JAVA_HOME=/path/to/jdk-25 ./gradlew :app:assembleDebug
+```
+
+**报这个错就是 JDK 版本不对**：
+
+```
+Unable to download toolchain matching the requirements ({languageVersion=25, ...})
+Received status code 400 from server: Bad Request
+```
+
+### 测试
+
+```bash
+JAVA_HOME="$HOME/下载/android-studio/jbr" ./gradlew :app:testDebugUnitTest
+```
+
+33 个单元测试，全部跑在电脑上、不需要手机：
+
+- `OcrMatcherTest` —— 比对引擎（16 个）
+- `DatasetParserTest` —— 表格解析与编码探测（16 个）
+- `ExampleUnitTest` —— 模板自带的样板测试（1 个）
+
+### 安装
+
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+---
+
+## 数据集格式
+
+导入的数据就是用来比对的**表格**：一行一个关键词。
+
+```text
+# 以 # 开头的是注释，会被跳过
+Serial Number
+Model
+Manufacturer, Mfg, Maker
+Production Date
+```
+
+### 解析规则
+
+| 规则 | 说明 |
+|------|------|
+| 一行一个条目 | 行的内容就是关键词 |
+| 逗号 / 制表符 / 分号分隔 | **第一个是名称，其余当别名**（上例中 `Mfg`、`Maker` 都算命中 `Manufacturer`） |
+| 空行、`#` 注释行 | 跳过 |
+| 两侧空白和 CSV 引号 | 自动去掉（`"Serial Number"` → `Serial Number`） |
+| 名称重复 | 合并别名，不产生重复条目 |
+
+### 编码
+
+Excel 在中文 Windows 上导出的 CSV 默认是 **GBK** 而不是 UTF-8，直接按 UTF-8 读会全是乱码。所以按下面顺序探测：
+
+```
+UTF-8 BOM  →  严格 UTF-8  →  GBK
+```
+
+导入的**预览页会显示识别出的编码**，一眼能确认。
+
+### 导入方式
+
+点右上角数据集胶囊 → 数据集管理页：
+
+- **选文件导入** —— 系统文件选择器，不申请任何权限
+- **粘贴导入** —— 直接粘贴文本
+
+两条路都会先进**预览确认页**（显示解析出多少项、前 8 项长什么样、编码、跳过了几行），确认后才落盘。这一步不能省——格式不对要在这里就能看出来。
+
+导入完成会自动切换成当前数据集。内置的「示例数据集」（20 项）不可删除，作为兜底。
+
+---
+
+## 匹配算法
+
+三层策略，从严格到宽松（`OcrMatcher.kt`）：
+
+| 层 | 规则 | 分数 |
+|----|------|------|
+| 1 | 归一化后**完全一致** | 1.0 |
+| 2 | **包含**：识别行里包含了某个表格项（`Serial Number: A12345` 包含 `Serial Number`） | 0.9 |
+| 3 | **模糊**：编辑距离，容忍 OCR 字母错误（`Manufacterer` → `Manufacturer`） | `1 - 距离/长度` |
+
+比对前先做**归一化**（`TextNormalizer.kt`）：转小写、全角转半角、只保留字母/数字/汉字，丢掉所有空白和标点。所以 `Serial Number:`、`serial number`、`ＳＥＲＩＡＬ　ＮＵＭＢＥＲ` 都会被认成同一个。
+
+### 为什么门槛这么复杂
+
+英文单词很短，**改一个字母往往就是另一个词**，所以不能简单地用相似度门槛：
+
+- 长度 < 5 的词**不参与模糊匹配**（`date` / `rate` 差一个字母就是两回事）
+- 5~6 字母容忍 1 个差异，7~10 容忍 2 个，11+ 容忍 3 个
+- 包含关系**只认一个方向**：识别行包含表格项算命中，反过来不算——否则 `Rate` 会因为落在 `Rated Voltage` 里而误命中
+- 包含判定要求短边至少 3 个字符，否则单字会命中一堆不相干的项
+
+---
+
+## 数据存储
+
+全部在 APP 私有目录（不需要任何存储权限，**卸载即清除**）：
+
+```text
+filesDir/
+├── gallery/                     内部相册
+│   ├── 000001.jpg               预览图（480px 宽，JPEG，约 40KB）
+│   ├── 000001.json              这一张的识别 + 比对结果
+│   └── ...                      上限 200 张，超出从最早的删
+└── datasets/                    数据集
+    ├── index.json               全部数据集的元信息 + 当前激活的是哪个
+    ├── 000001.csv               导入时的原始文件副本（原样保留）
+    └── 000001.entries.json      解析后的条目，匹配引擎直接读
+```
+
+两个设计点：
+
+1. **内存里不存全部照片**。相册条目只存元数据（文字），图片按需从磁盘解码，并且只有最近看过的 12 张留在 LRU 缓存里（约 7MB）。
+2. **保留数据集的原始文件副本**。以后解析规则升级可以重新解析，不丢用户数据。
+
+---
+
+## 项目结构
+
+```text
+app/src/main/java/dev/averyzhoux/recognizer/
+├── MainActivity.kt       界面与流程编排（相机、状态机、各页面 Composable）
+├── OcrMatcher.kt         比对引擎：三层策略 + 编辑距离
+├── TextNormalizer.kt     归一化：大小写、全角半角、标点
+├── DatasetParser.kt      表格解析 + 编码探测（纯函数，可单测）
+├── DatasetStore.kt       数据集的落盘 / 列表 / 删除 / 激活
+├── Dataset.kt            内置示例数据集
+├── GalleryStore.kt       相册的落盘 / 读取 / 淘汰
+└── ui/theme/             Compose 主题
+```
+
+`DatasetParser` 刻意和 `DatasetStore` 分开：解析全是纯函数、不碰 `Context`，所以能在电脑上直接跑单元测试。
+
+---
+
+## 发布
+
+推 `v*` 形式的 tag 会触发 `.github/workflows/release.yml`：
+
+```bash
+git tag v1.0.0
+git push github v1.0.0
+```
+
+workflow 会：跑单测（失败不出包）→ 从 tag 推版本号（`v1.2.3` → versionName `1.2.3` / versionCode `10203`）→ 构建 → 验签 → 建 GitHub Release。
+
+也可以在 Actions 页面手动触发（只上传 workflow artifact，不建 Release）。
+
+> ⚠️ **目前产出的是 debug 签名的 APK**（Android 默认调试密钥），仅供自己安装体验，**不适合上架或对外分发**。
+> workflow 里缓存了 `~/.android/debug.keystore`，所以各次构建签名一致、可以直接覆盖升级。注意 GitHub 的 cache 7 天不用会被清掉，清掉后签名会变，届时需要卸载重装。
+
+### 当前版本号规则
+
+`versionCode = major*10000 + minor*100 + patch`（上限：minor / patch 各 99）。
+
+---
+
+## 已知限制
+
+- **只识别拉丁文（英文 + 数字）**。需要中文得换成 `com.google.mlkit:text-recognition-chinese`，并把 `TextRecognizerOptions` 换成 `ChineseTextRecognizerOptions`。
+- **只有预览图，没有原图**。相册存的是 480px 宽的 JPEG，点开看大图会糊。要清晰得调大 `THUMBNAIL_WIDTH`（代价是磁盘和内存都涨）。
+- **表格是单列关键词**，不支持「字段名 + 标准值」的取值校验。要支持需要扩展 `Entry` 模型。
+- **不解析 HTML**。导入 HTML 文件会把标签当成关键词（预览页能看出来）。
+- 卸载 APP 会清掉相册和数据集，目前没有导出功能。
+
+## TODO
+
+- [ ] 从命中行里提取值（`Serial Number: A12345` → `A12345`）与标准值校验
+- [ ] 正式签名发布（keystore 走 GitHub Secrets）
+- [ ] 只打 arm64-v8a，把 APK 从 55MB 压到约 27MB（现在 4 个架构的 ML Kit native 库占了 42MB）
+- [ ] 相册 / 数据集导出
+
+---
+
+## License
+
+[MIT](LICENSE)
