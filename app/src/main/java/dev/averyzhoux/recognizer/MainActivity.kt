@@ -31,7 +31,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
@@ -51,7 +50,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -88,6 +86,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -713,29 +712,17 @@ fun CameraOcrScreen() {
             )
         }
 
-        // 比对结果面板：浮在快门栏上方
-        if (displayMatches != null) {
-            ResultPanel(
-                matches = displayMatches,
-                ocrFailed = ocrFailed,
-                continuous = continuousCapture,
-                onRetake = {
-                    status = OcrStatus.Idle
-                    lastSignature = null
-                    lastMatches = null
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 150.dp)
-            )
-        }
-
-        // 底部控件栏：
-        //   上一行 = 识别模式（位置参照相机 App 的「专业 / 录像 / 人像」那一排）
-        //   下一行 = 左缩略图 / 中快门 / 右模式切换（左右对称）
+        // 底部控件栏（自下而上）：
+        //   比对结果面板（有结果时才出现）
+        //   识别模式行（位置参照相机 App 的「专业 / 录像 / 人像」那一排）
+        //   左缩略图 / 中快门 / 右模式切换（左右对称）
         // 刻意不加任何背景/渐变衬底 —— 控制栏直接透出取景画面，
         // 只做导航栏避让，让内容延伸到透明的导航栏后面。
+        //
+        // 结果面板和控件栏放在**同一个 Column**里，而不是各自 align(BottomCenter)
+        // 再用一个写死的 bottom padding 错开：Column 的底边钉在屏幕底部，
+        // 面板只会往上长，所以面板多高、模式行多高、导航栏多高都不会互相压住，
+        // 不用维护「面板要抬高多少 dp」这种跟着布局变化的常量。
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
@@ -744,6 +731,22 @@ fun CameraOcrScreen() {
                 .windowInsetsPadding(WindowInsets.navigationBars)
                 .padding(bottom = 18.dp)
         ) {
+            if (displayMatches != null) {
+                ResultPanel(
+                    matches = displayMatches,
+                    ocrFailed = ocrFailed,
+                    continuous = continuousCapture,
+                    onRetake = {
+                        status = OcrStatus.Idle
+                        lastSignature = null
+                        lastMatches = null
+                    },
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 12.dp)
+                )
+            }
+
             PipelineModeRow(
                 current = pipeline,
                 onSelect = { picked ->
@@ -1127,7 +1130,10 @@ private fun ShutterButton(
 /**
  * 识别模式选择行，位置参照相机 App 的「专业 / 录像 / 人像」那一排。
  *
- * 纯文字、可横向滑动、选中项用强调色高亮（和其它选中态一致）。
+ * 5 个选项**等分整屏宽度**（`weight(1f)`），文字居中，不横向滚动：
+ * 滚动条会让最右那项被切掉、还得手动拖，一眼看不全有哪些模式。
+ * 用 weight 而不是按内容宽度排：无论标签多长、系统字号多大，
+ * 这一排都恰好铺满、永不溢出，不需要横向拖动。
  */
 @Composable
 private fun PipelineModeRow(
@@ -1137,28 +1143,30 @@ private fun PipelineModeRow(
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        // 只留一点点缝，让相邻两项的点击态（圆角背景）不贴在一起
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
         modifier = modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
             .padding(bottom = 8.dp)
     ) {
-        // 左右各垫一点，让首尾项不要贴边
-        Spacer(modifier = Modifier.width(14.dp))
-        Pipeline.entries.forEach { item ->
+        // 用 for 而不是 entries.forEach：forEach 的 lambda 收不到 RowScope，
+        // 里面的 Modifier.weight(1f) 会解析不到
+        for (item in Pipeline.entries) {
             val selected = item == current
             Text(
                 text = item.label,
+                textAlign = TextAlign.Center,
                 color = if (selected) XiaomiYellow else Color.White.copy(alpha = 0.55f),
                 style = MaterialTheme.typography.titleSmall,
                 maxLines = 1,
                 modifier = Modifier
+                    // 五等分，横向内边距交给 weight 分配，所以这里不再写 padding(horizontal)
+                    .weight(1f)
                     .clip(RoundedCornerShape(50))
                     .clickable { onSelect(item) }
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                    .padding(vertical = 8.dp)
             )
         }
-        Spacer(modifier = Modifier.width(14.dp))
     }
 }
 
