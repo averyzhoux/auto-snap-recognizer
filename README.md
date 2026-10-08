@@ -1,5 +1,8 @@
 # auto-snap-recognizer
 
+> Android 应用名：中文 **识鉴相机**，其它语言保持 **Recognizer**
+> （`res/values/strings.xml` 是默认的英文名，`res/values-zh/strings.xml` 是中文名）。
+
 自动拍摄并识别画面中的文字，与指定表格逐项比对，用来代替人眼识别和人脑核对。
 
 相机取景 → 拍照 → OCR → 跟本地表格比对 → 命中项高亮提示。支持手动单拍、每秒自动连拍，以及由相机连续推帧的「流式」。

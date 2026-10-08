@@ -50,3 +50,6 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# project temporary files
+tmp/

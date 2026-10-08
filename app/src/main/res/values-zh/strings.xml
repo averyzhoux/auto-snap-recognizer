@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  中文（简体 / 繁体 / 港澳台都用这个）下的应用名。
+  默认名在 values/strings.xml 里，是英文的 Recognizer——英文环境下保持原样。
+-->
+<resources>
+    <string name="app_name">识鉴相机</string>
+</resources>
