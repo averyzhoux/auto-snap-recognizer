@@ -80,7 +80,7 @@ internal fun StatusBanner(status: OcrStatus, modifier: Modifier = Modifier) {
 /**
  * 比对结果面板：逐行显示，命中的行打勾并标出命中的表格项。
  *
- * [continuous] 表示相机在持续推帧（自动模式 / 流式分析），此时「重拍」没有意义。
+ * [continuous] 表示相机在持续推帧（自动模式 / 流式），此时「重拍」没有意义。
  */
 @Composable
 internal fun ResultPanel(
@@ -124,7 +124,7 @@ internal fun ResultPanel(
 
                 // 「重拍」放在这一行最右侧，而不是单占底部一行——
                 // 它本来就只有两个小字，单开一行白占高度。
-                // 持续推帧（自动 / 流式分析）时它没有意义，所以不显示。
+                // 持续推帧（自动 / 流式）时它没有意义，所以不显示。
                 if (!continuous) {
                     Spacer(modifier = Modifier.weight(1f))
                     Text(

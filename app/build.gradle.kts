@@ -19,7 +19,7 @@ android {
         minSdk = 24
         targetSdk = 37
         versionCode = injectedVersionCode ?: 2
-        versionName = injectedVersionName ?: "v0.2.0-Athena"
+        versionName = injectedVersionName ?: "v0.2.1-Athena"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

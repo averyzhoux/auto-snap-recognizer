@@ -32,7 +32,7 @@ import java.util.concurrent.ExecutorService
  * - [PreviewView] 是传统 View，用 [AndroidView] 包进 Compose。
  * - [ImageCapture] 的 targetRotation 跟随屏幕旋转，拍出来的图才是正的。
  *
- * 流式分析（[Pipeline.Analysis]）用 [ImageAnalysis] 替代 ImageCapture：
+ * 流式（[Pipeline.Analysis]）用 [ImageAnalysis] 替代 ImageCapture：
  * KEEP_ONLY_LATEST + 上一帧 close 之后才推下一帧，所以是「识别完立刻拿最新的一帧」，
  * **不看**手动/自动开关——进了这条管线就一直处理。
  */
@@ -79,7 +79,7 @@ fun CameraPreview(
             cameraProvider.unbindAll()
 
             if (pipeline.usesAnalysis) {
-                // D 流式分析：由相机推帧，KEEP_ONLY_LATEST 保证不排队堆积
+                // D 流式：由相机推帧，KEEP_ONLY_LATEST 保证不排队堆积
                 analysis = ImageAnalysis.Builder()
                     .setResolutionSelector(
                         ResolutionSelector.Builder()
@@ -96,7 +96,7 @@ fun CameraPreview(
                     .build()
                     .also { useCase ->
                         useCase.setAnalyzer(captureExecutor) { image ->
-                            // 流式分析就是「一直处理」：手动/自动开关对这条管线不生效。
+                            // 流式就是「一直处理」：手动/自动开关对这条管线不生效。
                             //
                             // ★ 但翻相册 / 看数据集时要停下来。相册和数据集都是同一个
                             //   Activity 里的 Compose 覆盖层，**不会触发 onStop**，
@@ -120,7 +120,7 @@ fun CameraPreview(
                     analysis
                 )
             } else {
-                // A/B/C/标准：ImageCapture。C 走 ResolutionSelector 让 HAL 直接出小图
+                // A/B/C/基础：ImageCapture。C 走 ResolutionSelector 让 HAL 直接出小图
                 val imageCapture = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                     .setTargetRotation(previewView.display.rotation)

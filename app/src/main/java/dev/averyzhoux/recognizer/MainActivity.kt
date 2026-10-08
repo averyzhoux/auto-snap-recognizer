@@ -17,8 +17,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -312,13 +319,24 @@ fun CameraOcrScreen() {
         }
     }
 
-    // 当前识别管线。默认「标准」= 最初那一版行为。
-    var pipeline by remember { mutableStateOf(Pipeline.Standard) }
+    // 当前识别管线。默认「小型图」：从 HAL 源头就出小图，省内存也省时间，日常扫标签够用
+    var pipeline by remember { mutableStateOf(Pipeline.SmallCapture) }
+
+    // 流式专用：相机一直在推帧，需要一个停下来的开关（见右下角那个圆钮）。
+    // 进流式时默认就是暂停——先让人有机会调设置，再点「继续」开跑。
+    var analysisPaused by remember { mutableStateOf(false) }
+
+    // 各条管线的可调参数（分析间隔 / 降采样长边 / 相册保存间隔 / 只存命中的帧）
+    var pipelineSettings by remember { mutableStateOf(PipelineSettings()) }
+    // 设置面板是否展开（再点一次已选中、且可配置的那条管线展开）
+    var settingsOpen by remember { mutableStateOf(false) }
+    // 上一次真正处理帧的时刻，用来实现「分析间隔」限速
+    val lastAnalysisAt = remember { AtomicLong(0L) }
 
     /**
      * 是不是「相机一直在推帧」。
      *
-     * 流式分析进来自动连续处理，**完全不看**手动/自动开关——
+     * 流式进来自动连续处理，**完全不看**手动/自动开关——
      * 这条管线本来就没有「按一次快门拍一张」这个概念，开关留着只会让人困惑。
      * 其余四条管线才由 [autoMode] 决定：自动定时拍 / 手动等快门。
      */
@@ -340,14 +358,17 @@ fun CameraOcrScreen() {
      *
      * 「跳过」不等于丢掉：识别结果照常刷新，画面一变、时间一到就会存下来。
      */
-    val shouldSaveToGallery: (Long) -> Boolean = { signature ->
+    val shouldSaveToGallery: (Long, Int) -> Boolean = { signature, hitCount ->
         if (!continuousCapture) {
             true
+        } else if (pipelineSettings.saveHitsOnly && hitCount == 0) {
+            // 只存命中的帧：一行都没对上就不留
+            false
         } else if (signature == lastSavedSignature.get()) {
             false
         } else {
             val now = System.currentTimeMillis()
-            if (now - lastSavedAt.get() < GALLERY_SAVE_INTERVAL_MS) {
+            if (now - lastSavedAt.get() < pipelineSettings.gallerySaveIntervalMs) {
                 false
             } else {
                 lastSavedSignature.set(signature)
@@ -361,10 +382,23 @@ fun CameraOcrScreen() {
      * 处理一帧。5 条管线最终都走这里，区别只在 [pipeline] 决定的取图 / 喂图方式。
      *
      * 位图策略：
-     * - 标准 / 降采样：位图既喂 ML Kit，也拿来做缩略图
-     * - 省内存 / 小图直出 / 流式：位图**只用来做缩略图**，ML Kit 直接读 MediaImage（零拷贝）
+     * - 基础 / 降采样：位图既喂 ML Kit，也拿来做缩略图
+     * - 省内存 / 小型图 / 流式：位图**只用来做缩略图**，ML Kit 直接读 MediaImage（零拷贝）
      */
     val processFrame: (ImageProxy) -> Unit = frame@{ image ->
+        // ★ 流式限速：距上一次真正处理不足「分析间隔」就把这帧丢掉。
+        //   放在 toBitmap() **之前**丢——YUV→RGB 转换是这条路上最贵的一步，
+        //   丢在这里才真的省下 CPU 和电，而不是转完再扔。
+        //   image 必须 close，否则相机管线会卡住。
+        if (pipeline.usesAnalysis && pipelineSettings.analysisIntervalMs > 0) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastAnalysisAt.get() < pipelineSettings.analysisIntervalMs) {
+                image.close()
+                return@frame
+            }
+            lastAnalysisAt.set(now)
+        }
+
         busy.set(true)
         val current = pipeline
         val rotationDegrees = image.imageInfo.rotationDegrees
@@ -386,7 +420,7 @@ fun CameraOcrScreen() {
         // 喂给 ML Kit 的那份（只有前两条管线需要位图）
         val ocrSource: Bitmap? = when {
             !current.usesBitmap -> null
-            current == Pipeline.Downscaled -> full.scaledToLongEdge(Pipeline.DOWNSCALE_LONG_EDGE)
+            current == Pipeline.Downscaled -> full.scaledToLongEdge(pipelineSettings.downscaleLongEdge)
             else -> full
         }
         // 缩略图和 ocrSource 都是独立拷贝，全分辨率这张可以立刻放掉
@@ -404,7 +438,7 @@ fun CameraOcrScreen() {
             Log.d(TAG, "frame unchanged, reuse cached result")
             lastSignature = signature
             status = OcrStatus.Recognized(thumb, cached, fromCache = true)
-            if (shouldSaveToGallery(signature)) {
+            if (shouldSaveToGallery(signature, cached.count { it.isHit })) {
                 saveToGallery(
                     store = galleryStore,
                     gallery = gallery,
@@ -436,7 +470,7 @@ fun CameraOcrScreen() {
                 fromCache = false,
                 ocrFailed = ocrFailed
             )
-            if (shouldSaveToGallery(signature)) {
+            if (shouldSaveToGallery(signature, result.count { it.isHit })) {
                 saveToGallery(
                     store = galleryStore,
                     gallery = gallery,
@@ -472,7 +506,7 @@ fun CameraOcrScreen() {
         }
     }
 
-    // 用 ImageCapture 抓一帧（标准 / 省内存 / 降采样 / 小图直出 四条管线用）
+    // 用 ImageCapture 抓一帧（基础 / 省内存 / 降采样 / 小型图 四条管线用）
     val takePicture: (ImageCapture) -> Unit = { useCase ->
         busy.set(true)
         useCase.takePicture(
@@ -499,7 +533,7 @@ fun CameraOcrScreen() {
     // 自动模式：每 1 秒抓一帧。下面这些 key 任一变化就重启循环，
     // Composable 离开时循环自动取消；transientErrorAt 变化会把循环从 delay 里唤醒。
     LaunchedEffect(autoMode, imageCapture, transientErrorAt, screen, pipeline) {
-        // 流式分析由相机连续推帧，跟手动/自动开关无关，这里不参与
+        // 流式由相机连续推帧，跟手动/自动开关无关，这里不参与
         if (pipeline.usesAnalysis) return@LaunchedEffect
         val useCase = imageCapture ?: return@LaunchedEffect
         if (!autoMode) return@LaunchedEffect
@@ -515,11 +549,32 @@ fun CameraOcrScreen() {
                 takePicture(useCase)
             }
             transientErrorAt = null
-            delay(AUTO_CAPTURE_INTERVAL_MS)
+            // 抓帧周期可以在「降采样设置」里改；0 表示用默认值
+            // （不能真按 0 跑，那是个死循环式的连拍）
+            val interval = pipelineSettings.captureIntervalMs
+            delay(if (interval > 0) interval else AUTO_CAPTURE_INTERVAL_MS)
         }
     }
 
     val capture = imageCapture
+
+    /**
+     * 相机输出的「短边/长边」之比（4:3 竖屏 = 0.75），给降采样设置面板推算缩完的尺寸用。
+     *
+     * 比例是设备和传感器的属性，不该让使用者再填一遍，所以直接从相机的输出规格读。
+     * ★ 相机绑好之前 [ImageCapture.getResolutionInfo] 是 null，这时按 4:3 估一个——
+     * 绝大多数手机后摄就是 4:3，估错也只是面板上那行提示数字不准，不影响实际缩放。
+     */
+    val captureAspect: Float = runCatching {
+        imageCapture?.resolutionInfo?.resolution
+    }.getOrNull()?.let { size ->
+        if (size.width > 0 && size.height > 0) {
+            minOf(size.width, size.height).toFloat() / maxOf(size.width, size.height)
+        } else {
+            null
+        }
+    } ?: (3f / 4f)
+
     val displayMatches = status.matchesOrNull()?.let { matches ->
         // 命中的排前面，避免一堆未命中的噪声把结果淹掉（sortedBy 是稳定排序）
         matches.sortedByDescending { it.isHit }
@@ -534,9 +589,10 @@ fun CameraOcrScreen() {
         CameraPreview(
             captureExecutor = captureExecutor,
             pipeline = pipeline,
-            // 只有停在拍摄页才处理帧：相册 / 详情 / 数据集都是本 Activity 的
-            // Compose 覆盖层，不触发 onStop，CameraX 不会自己停
-            deliverFrames = screen == Screen.Camera,
+            // 只有停在拍摄页、且流式没被暂停时才处理帧：
+            // 相册 / 详情 / 数据集都是本 Activity 的 Compose 覆盖层，不触发 onStop，
+            // CameraX 不会自己停
+            deliverFrames = screen == Screen.Camera && !analysisPaused,
             onImageCaptureReady = { imageCapture = it },
             onFrame = processFrame,
             modifier = Modifier.fillMaxSize()
@@ -609,11 +665,19 @@ fun CameraOcrScreen() {
             PipelineModeRow(
                 current = pipeline,
                 onSelect = { picked ->
-                    if (picked != pipeline) {
+                    if (picked == pipeline) {
+                        // ★ 再点一次已经选中的那条管线 = 展开它的设置面板
+                        //   （标签正上方有个自绘的上拉箭头示意）
+                        settingsOpen = true
+                    } else {
                         pipeline = picked
                         // 换管线要清帧缓存：不同管线画质不同，复用旧结果会误导
                         lastSignature = null
                         lastMatches = null
+                        // 进流式**默认暂停**：先让人有机会调设置，再点「继续」开跑。
+                        // 换成别的管线时这个值不影响它们（deliverFrames 只管 ImageAnalysis）。
+                        analysisPaused = picked.usesAnalysis
+                        settingsOpen = false
                     }
                 }
             )
@@ -657,23 +721,32 @@ fun CameraOcrScreen() {
                 ShutterButton(
                     status = status,
                     enabled = capture != null,
-                    // 流式分析 / 自动模式下由相机驱动，快门只做状态指示，不参与点击
+                    // 流式 / 自动模式下由相机驱动，快门只做状态指示，不参与点击
                     externallyDriven = continuousCapture,
                     onClick = { capture?.let(takePicture) }
                 )
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                // 右侧：模式切换，和左侧缩略图对称的一个圆形按钮
-                // 流式分析下这个开关没意义，禁用并显示「连续」
+                // 右下角圆钮：普通管线切自动/手动，流式切暂停/继续
                 ModeSwitch(
-                    autoMode = autoMode,
-                    enabled = !pipeline.usesAnalysis,
-                    onToggle = { auto ->
-                        autoMode = auto
-                        // 切模式时清缓存，免得手动模式下看到自动模式的旧结果
-                        lastSignature = null
-                        lastMatches = null
+                    label = if (pipeline.usesAnalysis) {
+                        // 显示的是一直在跑时该按的动作：跑着显示「暂停」，停了显示「继续」
+                        if (analysisPaused) "继续" else "暂停"
+                    } else {
+                        if (autoMode) "自动" else "手动"
+                    },
+                    active = if (pipeline.usesAnalysis) !analysisPaused else autoMode,
+                    onClick = {
+                        if (pipeline.usesAnalysis) {
+                            // 只翻转这一个开关：analyzer 那边靠 deliverFrames 丢掉帧
+                            analysisPaused = !analysisPaused
+                        } else {
+                            autoMode = !autoMode
+                            // 切模式时清缓存，免得手动模式下看到自动模式的旧结果
+                            lastSignature = null
+                            lastMatches = null
+                        }
                     }
                 )
             }
@@ -697,6 +770,35 @@ fun CameraOcrScreen() {
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 2.5.dp)
         )
+
+        // 流式设置：从底部上拉展开。
+        // 遮罩先声明、面板后声明，这样面板在遮罩之上；点遮罩任意处收起。
+        if (settingsOpen) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .clickable(
+                        // 只认点击，不能让手指划过也关掉
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { settingsOpen = false }
+            )
+        }
+        AnimatedVisibility(
+            visible = settingsOpen,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            PipelineSettingsSheet(
+                pipeline = pipeline,
+                settings = pipelineSettings,
+                sourceAspect = captureAspect,
+                onChange = { pipelineSettings = it },
+                onDismiss = { settingsOpen = false }
+            )
+        }
 
         // 粘贴导入
         if (pasteDialogOpen) {

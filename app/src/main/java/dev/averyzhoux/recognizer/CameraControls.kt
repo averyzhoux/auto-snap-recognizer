@@ -1,6 +1,7 @@
 package dev.averyzhoux.recognizer
 
 import android.graphics.Bitmap
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -23,7 +25,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
@@ -36,27 +40,21 @@ internal val SHUTTER_SIZE = 76.dp
 /** 缩略图槽位尺寸，左右各留一个保证快门在视觉上居中 */
 internal val THUMBNAIL_SLOT = 56.dp
 /**
- * 模式切换：和左侧缩略图对称的一个圆形按钮，点一下在「自动 / 手动」之间切换。
+ * 右下角那个圆形开关，和左侧缩略图对称。
  *
- * 选中态用小米相机的黄色 + 一圈黄色描边表示，一眼能看出当前是哪种模式。
- * 流式分析下由相机连续推帧，这个开关不适用：[enabled] 传 false，
- * 按钮灰掉、显示「连续」且不可点。
+ * 它管什么由调用方决定，所以这里只收「显示什么字 / 算不算选中态 / 点了干什么」：
+ * - 普通管线 → 切换**自动 / 手动**
+ * - 流式 → 切换**暂停 / 继续**（相机一直在推帧，需要一个停下来的开关）
+ *
+ * 选中态用小米相机的黄色 + 一圈黄色描边表示。
  */
 @Composable
 internal fun ModeSwitch(
-    autoMode: Boolean,
-    enabled: Boolean,
-    onToggle: (Boolean) -> Unit,
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val label = when {
-        !enabled -> "连续"
-        autoMode -> "自动"
-        else -> "手动"
-    }
-    // 「连续」是一种被强制的模式，也算选中态，用黄色表示
-    val active = !enabled || autoMode
-
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
@@ -68,7 +66,7 @@ internal fun ModeSwitch(
                 color = if (active) XiaomiYellow else Color.White.copy(alpha = 0.6f),
                 shape = CircleShape
             )
-            .clickable(enabled = enabled) { onToggle(!autoMode) }
+            .clickable(onClick = onClick)
     ) {
         Text(
             text = label,
@@ -81,7 +79,7 @@ internal fun ModeSwitch(
 /**
  * 小米相机式快门按钮：白色圆环 + 白色内圆。
  *
- * [externallyDriven] 为 true 时（自动模式 / 流式分析）按钮不参与点击，
+ * [externallyDriven] 为 true 时（自动模式 / 流式）按钮不参与点击，
  * 由相机那边驱动，半透明表示不可点；识别中时内圆变成一个小方块/进度指示。
  */
 @Composable
@@ -137,6 +135,10 @@ internal fun ShutterButton(
  * 滚动条会让最右那项被切掉、还得手动拖，一眼看不全有哪些模式。
  * 用 weight 而不是按内容宽度排：无论标签多长、系统字号多大，
  * 这一排都恰好铺满、永不溢出，不需要横向拖动。
+ *
+ * 任意一项被选中时，标签**正上方**会多一个自绘的上拉箭头：再点一次这一项会从底部
+ * 展开这条管线的设置（分析间隔等），箭头是给这个隐藏操作的提示。
+ * 箭头是画出来的，不是字符 `⌃`——字体里有没有那个字形完全没法保证。
  */
 @Composable
 internal fun PipelineModeRow(
@@ -156,20 +158,67 @@ internal fun PipelineModeRow(
         // 里面的 Modifier.weight(1f) 会解析不到
         for (item in Pipeline.entries) {
             val selected = item == current
-            Text(
-                text = item.label,
-                textAlign = TextAlign.Center,
-                color = if (selected) XiaomiYellow else Color.White.copy(alpha = 0.55f),
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 1,
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
-                    // 五等分，横向内边距交给 weight 分配，所以这里不再写 padding(horizontal)
                     .weight(1f)
                     .clip(RoundedCornerShape(50))
                     .clickable { onSelect(item) }
                     .padding(vertical = 8.dp)
-            )
+            ) {
+                // ★ 每一项都留出同样高度的箭头槽，只有被选中的那条才填内容。
+                //   不这么做的话，只有它顶上多一截，文字会被挤下去、和旁边几项错位。
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.height(CHEVRON_SLOT)
+                ) {
+                    if (selected) {
+                        UpChevron(color = XiaomiYellow)
+                    }
+                }
+                Text(
+                    text = item.label,
+                    textAlign = TextAlign.Center,
+                    color = if (selected) XiaomiYellow else Color.White.copy(alpha = 0.55f),
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1
+                )
+            }
         }
+    }
+}
+
+/** 箭头槽的高度：给上拉箭头留的位置，所有模式项都留同样的高 */
+private val CHEVRON_SLOT = 4.dp
+
+/**
+ * 上拉箭头（一个「⌃」形状的雪佛龙），自绘。
+ *
+ * 用画的而不是打 `⌃` / `▲` 这类字符：字体里有没有那个字形没法保证，
+ * 缺字形的时候会显示成豆腐块，比没有还难看。
+ *
+ * 尺寸调过两轮（12×6 → 8×4 → 5.5×3）。这么小的时候**线宽不能按比例跟着缩**：
+ * 0.7dp 在高密度屏上只剩 2px，抗锯齿之后会糊成一团灰，所以停在 0.8dp。
+ */
+@Composable
+private fun UpChevron(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier.size(width = 5.5.dp, height = 3.dp)) {
+        val stroke = 0.8.dp.toPx()
+        // 左右两笔在顶点交汇，端点磨圆，看起来才像相机里的那种箭头
+        drawLine(
+            color = color,
+            start = Offset(0f, size.height),
+            end = Offset(size.width / 2f, 0f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(size.width / 2f, 0f),
+            end = Offset(size.width, size.height),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
     }
 }
 

@@ -18,7 +18,7 @@ internal const val AUTO_CAPTURE_INTERVAL_MS = 1_000L
 /**
  * 连续推帧模式下，两次「存入相册」之间的最小间隔。
  *
- * 自动拍摄是 1 秒一帧，流式分析更快——画面静止时走像素指纹复用，不跑 ML Kit，
+ * 自动拍摄是 1 秒一帧，流式更快——画面静止时走像素指纹复用，不跑 ML Kit，
  * 能一直贴着相机帧率出帧。每帧都存的话 [MAX_GALLERY_ITEMS] 张上限几秒钟就满，
  * 磁盘也会一直写（每张约 40KB）。
  *
@@ -37,38 +37,56 @@ internal const val THUMBNAIL_WIDTH = 480
  * 识别管线：决定「怎么从相机拿帧」和「怎么喂给 ML Kit」。
  *
  * 5 种模式的内存/耗时/精度取舍不同，让使用者按场景自己选（见底部的模式行）。
- * 默认 [Standard]——也就是最初那一版行为，保持兼容。
+ * 默认 [SmallCapture]——从 HAL 源头就出小图，日常扫标签够用。
+ *
+ * [description] 是给设置面板看的一句话说明：进面板第一眼要先知道这条管线是干什么的，
+ * 再往下才是能调什么。写完对着模式行念一遍，念不顺就是写太长了。
  */
-enum class Pipeline(val label: String) {
+enum class Pipeline(val label: String, val description: String) {
     /** 原方式：ImageCapture 全分辨率 + toBitmap + fromBitmap */
-    Standard("标准"),
+    Standard(
+        "基础",
+        "全分辨率拍照再识别。最稳，也最费内存——最初那一版行为"
+    ),
 
     /** A 省内存：ImageCapture 全分辨率，但 ML Kit 直接读相机 YUV（零拷贝） */
-    MediaImage("省内存"),
+    MediaImage(
+        "省内存",
+        "照样全分辨率取帧，但识别直接读相机原始数据，少拷一份大图"
+    ),
 
     /** B 降采样：先缩到长边 [DOWNSCALE_LONG_EDGE] 再喂 ML Kit */
-    Downscaled("降采样"),
+    Downscaled(
+        "降采样",
+        "识别前先把图缩小。更快、更省内存，代价是远处的小字可能认不出"
+    ),
 
-    /** C 小图直出：用 ResolutionSelector 让相机 HAL 直接出小图 */
-    SmallCapture("小图直出"),
+    /** C 小型图：用 ResolutionSelector 让相机 HAL 直接出小图 */
+    SmallCapture(
+        "小型图",
+        "让相机直接输出 1600×1200 的小图，从源头省内存"
+    ),
 
-    /** D 流式分析：ImageAnalysis + KEEP_ONLY_LATEST，由相机推帧而不是我们定时拍 */
-    Analysis("流式分析");
+    /** D 流式：ImageAnalysis + KEEP_ONLY_LATEST，由相机推帧而不是我们定时拍 */
+    Analysis(
+        "流式",
+        "相机连续推帧，这一帧识别完立刻看下一帧。适合一口气扫一堆标签"
+    );
 
     /** 用 ImageAnalysis 驱动（只有 D） */
     val usesAnalysis: Boolean get() = this == Analysis
 
-    /** ML Kit 拿到的是 Bitmap（标准 / 降采样），而不是 MediaImage */
+    /** ML Kit 拿到的是 Bitmap（基础 / 降采样），而不是 MediaImage */
     val usesBitmap: Boolean get() = this == Standard || this == Downscaled
 
     companion object {
         /** B 降采样：长边目标。2048 是保守值——再小就可能认不出远处的小字 */
         const val DOWNSCALE_LONG_EDGE = 2048
 
-        /** C 小图直出：让相机输出的尺寸 */
+        /** C 小型图：让相机输出的尺寸 */
         val SMALL_CAPTURE_SIZE = Size(1600, 1200)
 
-        /** D 流式分析：分析流尺寸 */
+        /** D 流式：分析流尺寸 */
         val ANALYSIS_SIZE = Size(1920, 1080)
     }
 }
