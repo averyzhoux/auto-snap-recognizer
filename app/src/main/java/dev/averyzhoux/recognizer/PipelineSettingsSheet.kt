@@ -35,8 +35,9 @@ import kotlin.math.roundToInt
 /**
  * 各条管线的可调参数。
  *
- * 目前**只存在内存里**：切走管线或重启 App 都会回到默认值。
- * 想持久化的话加一层 `SharedPreferences` 就行，字段都给了默认值，不用改别处。
+ * 只活在内存里的**当前值**；落盘由 [PipelineSettingsStore] 负责（SharedPreferences，
+ * 全 App 一份）。字段的默认值就是「从没改过 / 磁盘上还没这个 key」时的取值，
+ * 所以加字段时改这里一处即可，Store 的 `load()` 会自动跟上。
  */
 internal data class PipelineSettings(
     /**

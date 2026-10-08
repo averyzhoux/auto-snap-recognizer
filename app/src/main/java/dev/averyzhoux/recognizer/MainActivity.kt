@@ -364,8 +364,10 @@ fun CameraOcrScreen() {
     // 进流式时默认就是暂停——先让人有机会调设置，再点「继续」开跑。
     var analysisPaused by remember { mutableStateOf(false) }
 
-    // 各条管线的可调参数（分析间隔 / 降采样长边 / 相册保存间隔 / 只存命中的帧）
-    var pipelineSettings by remember { mutableStateOf(PipelineSettings()) }
+    // 各条管线的可调参数（分析间隔 / 降采样长边 / 相册保存间隔 / 只存命中的帧）。
+    // 从磁盘读回来，所以上次调好的值重启后还在；读不到就走数据类里的默认值。
+    val settingsStore = remember { PipelineSettingsStore(context.applicationContext) }
+    var pipelineSettings by remember { mutableStateOf(settingsStore.load()) }
     // 设置面板是否展开（再点一次已选中、且可配置的那条管线展开）
     var settingsOpen by remember { mutableStateOf(false) }
     // 上一次真正处理帧的时刻，用来实现「分析间隔」限速
@@ -847,7 +849,11 @@ fun CameraOcrScreen() {
                 pipeline = pipeline,
                 settings = pipelineSettings,
                 sourceAspect = captureAspect,
-                onChange = { pipelineSettings = it },
+                // 改一项就落一次盘（后台线程，不卡 UI）。点标签和自填数字都走这里。
+                onChange = {
+                    pipelineSettings = it
+                    settingsStore.save(it)
+                },
                 onDismiss = { settingsOpen = false }
             )
         }
