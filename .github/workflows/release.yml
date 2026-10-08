@@ -1,0 +1,157 @@
+name: Build & Release APK
+
+# 打 tag 触发，例如 v1.2.3；也支持手动触发（会跑一遍构建并上传为 workflow artifact）
+#
+# ⚠️ 目前产出的是 **debug 签名**的 APK（Android 默认调试密钥），
+#    适合自己安装体验，**不适合上架或对外分发**。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（如 1.2.3）。留空则用 0.0.<run_number>'
+        required: false
+        default: ''
+
+permissions:
+  contents: write         # 创建 GitHub Release 需要
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 项目在 gradle/gradle-daemon-jvm.properties 里把 daemon 钉死在 Java 25，
+      # 这里必须装 25。装 17/21 的话 Gradle 会转去 foojay 下载工具链并失败。
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle      # 缓存依赖，省掉每次重下 CameraX / ML Kit（100MB+）
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      # setup-android 只装 cmdline-tools；compileSdk 37 的 platform 由 AGP 自动下载，
+      # 但前提是许可已被接受，所以显式接受一次，避免 "licences not accepted"。
+      # 刻意不写死 platform 版本号：交给 AGP 决定该拉哪个 revision。
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      # 单测作为闸门：失败就不出包
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+
+      # 从 tag 推版本号：v1.2.3 -> versionName=1.2.3，versionCode=10203
+      # 手动触发且没填版本号时，退化成 0.0.<run_number>，保证 versionCode 仍是数字
+      - name: Compute version
+        id: version
+        run: |
+          set -euo pipefail
+
+          RAW="${{ inputs.version }}"
+          if [ -z "$RAW" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            RAW="${GITHUB_REF_NAME#v}"
+          fi
+
+          if [ -z "$RAW" ]; then
+            MAJOR=0; MINOR=0; PATCH="${GITHUB_RUN_NUMBER}"
+          else
+            VERSION="${RAW#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+            PATCH="${PATCH%%[!0-9]*}"     # 去掉 -beta.1 之类的后缀
+          fi
+
+          # 任何一段不是纯数字就当 0，避免算 versionCode 时报错
+          [[ "${MAJOR:-}" =~ ^[0-9]+$ ]] || MAJOR=0
+          [[ "${MINOR:-}" =~ ^[0-9]+$ ]] || MINOR=0
+          [[ "${PATCH:-}" =~ ^[0-9]+$ ]] || PATCH=0
+
+          NAME="${MAJOR}.${MINOR}.${PATCH}"
+          CODE=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
+
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "versionName=$NAME  versionCode=$CODE"
+
+      # 关键：把 debug keystore 缓存住。
+      # 全新 runner 上 ~/.android/debug.keystore 不存在，AGP 会当场随机生成一个，
+      # 于是**每次构建的签名都不同**，Android 会拒绝覆盖安装 —— 必须卸载重装，
+      # 而相册和数据集都在私有目录里，卸载就全丢了。
+      # 缓存之后所有 CI 构建共用同一把调试密钥，可以直接覆盖升级。
+      #
+      # 注意用 restore/save 分开：Build 之前 restore，Build 之后 save。
+      # 若只用单个 actions/cache，第一次跑时 keystore 还没生成，会存不到东西，
+      # 导致前两次构建的签名仍然不同。分开写就能从第一次起就固化。
+      - name: Restore debug keystore
+        id: keystore-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore
+
+      - name: Build APK
+        run: |
+          ./gradlew assembleDebug --no-daemon \
+            -PversionName=${{ steps.version.outputs.name }} \
+            -PversionCode=${{ steps.version.outputs.code }}
+
+      - name: Save debug keystore
+        if: steps.keystore-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore
+
+      # 确认产物存在且确实签过名（debug 包会用调试密钥自动签名）
+      - name: Verify APK signature
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -f "$APK"
+          APKSIGNER=$(ls -1 "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          test -x "$APKSIGNER" || { echo "apksigner not found"; exit 1; }
+          "$APKSIGNER" verify --print-certs "$APK"
+
+      - name: Collect artifact
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk \
+             "out/recognizer-${{ steps.version.outputs.name }}-debug.apk"
+          ls -la out
+
+      # 手动触发时 ref 不是 tag，这里就不会跑，只留 workflow artifact 可下载
+      - name: Upload APK (workflow artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: recognizer-${{ steps.version.outputs.name }}-debug
+          path: out/*.apk
+
+      - name: Create Release
+        # action-gh-release 要求 ref 是 tag，手动触发时必须跳过
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.apk
+          # body 会被放在自动生成的变更列表前面，所以这个警告一定看得到
+          body: |
+            ## 安装说明
+
+            下载 `recognizer-${{ steps.version.outputs.name }}-debug.apk` 直接安装即可。
+
+            > ⚠️ 这是 **debug 签名**的构建（Android 默认调试密钥），
+            > 仅供自己安装体验，**不适合上架或对外分发**。
+
+            - 版本名：`${{ steps.version.outputs.name }}`
+            - 版本号：`${{ steps.version.outputs.code }}`
+            - 最低支持：Android 7.0 (API 24)
+          generate_release_notes: true
