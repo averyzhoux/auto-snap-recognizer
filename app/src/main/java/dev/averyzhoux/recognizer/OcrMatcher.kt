@@ -16,6 +16,28 @@ data class Entry(
     val marked: Boolean = false
 )
 
+/**
+ * 这一行是靠**哪一层**命中表格项的。
+ *
+ * 之所以要单独记「种类」而不是只看 [LineMatch.similarity]：颜色是个**分类**问题，
+ * 用「分数过不过阈值」来表达是隐患——比如「包含」当初只是被赋了 0.9 这个魔法分数，
+ * 于是就成了黄色；后来想把包含改判成绿色，就只能去改那个分数（等于让 similarity 撒谎）。
+ * 记下种类之后，规则和分数各归各的。
+ */
+enum class MatchKind {
+    /** 归一化后完全一致（含别名、大小写、标点差异） */
+    Exact,
+
+    /** 识别行里**包含了整个**表格项，例如 `6TH-6983` 包含 `TH-6983` */
+    Contains,
+
+    /** 编辑距离模糊命中，通常是 OCR 认错了字母（`QS-4185` → `JS-4185`） */
+    Fuzzy,
+
+    /** 没命中 */
+    None
+}
+
 /** 某一行 OCR 文本的比对结果。 */
 data class LineMatch(
     /** ML Kit 识别出来的原始文本（未经归一化） */
@@ -25,10 +47,21 @@ data class LineMatch(
     /** 命中时是靠哪个写法命中的（标准名或某个别名），用于解释“为什么算命中” */
     val matchedOn: String?,
     /** 相似度 0.0~1.0，1.0 表示归一化后完全一致 */
-    val similarity: Float
+    val similarity: Float,
+    /** 靠哪一层命中的；默认 [MatchKind.None] 以兼容旧调用 */
+    val kind: MatchKind = MatchKind.None
 ) {
     val isHit: Boolean get() = entry != null
-    val isExact: Boolean get() = isHit && similarity >= 0.999f
+
+    /** 归一化后一字不差 */
+    val isExact: Boolean get() = kind == MatchKind.Exact
+
+    /**
+     * 「强命中」= 完全相同 **或** 包含，用来决定**显示成绿色**。
+     *
+     * 这两种都表示「表格项确实在这行里」；模糊命中才是「可能是它，但认错了字母」。
+     */
+    val isStrong: Boolean get() = kind == MatchKind.Exact || kind == MatchKind.Contains
 }
 
 /**
@@ -72,11 +105,11 @@ class OcrMatcher(
         val normalized = TextNormalizer.normalize(raw)
 
         // 空行 / 纯符号行：直接当没命中
-        if (normalized.isEmpty()) return LineMatch(raw, null, null, 0f)
+        if (normalized.isEmpty()) return LineMatch(raw, null, null, 0f, MatchKind.None)
 
         // 第 1 层：完全一致
         candidates.firstOrNull { it.normalized == normalized }?.let {
-            return LineMatch(raw, it.entry, it.label, 1f)
+            return LineMatch(raw, it.entry, it.label, 1f, MatchKind.Exact)
         }
 
         var best: Scored? = null
@@ -84,7 +117,7 @@ class OcrMatcher(
             val scored = score(normalized, candidate)
             if (best == null || scored.similarity > best.similarity) best = scored
         }
-        val winner = best ?: return LineMatch(raw, null, null, 0f)
+        val winner = best ?: return LineMatch(raw, null, null, 0f, MatchKind.None)
 
         // 第 2 层：包含关系。
         //
@@ -93,9 +126,14 @@ class OcrMatcher(
         // 反向（表格项包含了整条识别行）不算命中，否则
         //   "Rate" 会因为落在 "Rated Voltage" 里而误命中。
         // 真实的 "Mfg Date" 这种写法靠别名命中，不需要这条规则兜底。
+        //
+        // 判定宽严**没变**，只是把种类标成 Contains —— 它算「强命中」，显示成绿色。
         val lineIsLonger = normalized.length > winner.candidate.normalized.length
         if (winner.contained && lineIsLonger) {
-            return LineMatch(raw, winner.candidate.entry, winner.candidate.label, winner.similarity)
+            return LineMatch(
+                raw, winner.candidate.entry, winner.candidate.label,
+                winner.similarity, MatchKind.Contains
+            )
         }
 
         // 第 3 层：模糊匹配。
@@ -106,9 +144,12 @@ class OcrMatcher(
         val hit = withinLength && withinDistance && winner.similarity >= fuzzyThreshold
 
         return if (hit) {
-            LineMatch(raw, winner.candidate.entry, winner.candidate.label, winner.similarity)
+            LineMatch(
+                raw, winner.candidate.entry, winner.candidate.label,
+                winner.similarity, MatchKind.Fuzzy
+            )
         } else {
-            LineMatch(raw, null, null, winner.similarity)
+            LineMatch(raw, null, null, winner.similarity, MatchKind.None)
         }
     }
 

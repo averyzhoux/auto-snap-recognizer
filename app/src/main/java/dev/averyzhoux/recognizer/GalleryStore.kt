@@ -182,6 +182,9 @@ class GalleryStore(context: Context) {
                     match.matchedOn?.let { put("matchedOn", it) }
                     put("sim", match.similarity.toDouble())
                     put("hit", match.isHit)
+                    // 命中种类也要存：颜色是按种类判的，不存的话回看时
+                    // 「包含」会被当成模糊、从绿变黄
+                    put("kind", match.kind.name)
                 }
             )
         }
@@ -199,6 +202,7 @@ class GalleryStore(context: Context) {
         val matches = (0 until matchArray.length()).map { i ->
             val obj = matchArray.getJSONObject(i)
             val entryName = if (obj.has("entry")) obj.optString("entry") else null
+            val similarity = obj.optDouble("sim", 0.0).toFloat()
             LineMatch(
                 rawText = obj.optString("text"),
                 // 别名等信息不需要，展示只用得到名字。
@@ -207,7 +211,8 @@ class GalleryStore(context: Context) {
                     Entry(name = it, marked = obj.optBoolean("marked", false))
                 },
                 matchedOn = if (obj.has("matchedOn")) obj.optString("matchedOn") else null,
-                similarity = obj.optDouble("sim", 0.0).toFloat()
+                similarity = similarity,
+                kind = parseMatchKind(obj.optString("kind"), entryName != null, similarity)
             )
         }
 
@@ -245,6 +250,24 @@ class GalleryStore(context: Context) {
     companion object {
         private const val TAG_STORE = "Recognizer"
     }
+}
+
+/**
+ * 从相册 JSON 里读「命中种类」。
+ *
+ * ★ 兼容旧照片：`kind` 是后加的，早期 JSON 里没有这个字段。读不到就按**当时的规则**
+ * 回落（相似度 ≥0.999 算完全相同，其余算模糊），这样旧照片的颜色和拍的时候一致。
+ *
+ * 副作用是**旧的「包含」命中仍然显示黄色**，不会因为「包含改判成绿色」那次改动变绿——
+ * 这是刻意的：照片记录的是拍摄那一刻的状态。
+ *
+ * 抽成顶层函数（而不是 [GalleryStore] 的私有方法）是为了能单测：
+ * 这条回落规则很容易写反，而它出错时**只会静默变色**，不会有任何报错。
+ */
+internal fun parseMatchKind(name: String, hit: Boolean, similarity: Float): MatchKind = when {
+    !hit -> MatchKind.None
+    else -> MatchKind.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
+        ?: if (similarity >= 0.999f) MatchKind.Exact else MatchKind.Fuzzy
 }
 
 /**

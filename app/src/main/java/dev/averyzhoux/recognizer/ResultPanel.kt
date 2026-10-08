@@ -164,12 +164,13 @@ internal fun ResultPanel(
     }
 }
 
-/** 单行的比对结果：命中 = 高亮 + 打勾，未命中 = 灰显。 */
+/** 单行的比对结果：命中 = 高亮 + 打勾，未命中 = 灰显。整条**只占一行**。 */
 @Composable
 internal fun MatchRow(match: LineMatch) {
-    // 完全相同 → 绿，近似 → 黄，未命中 → 灰
+    // 完全相同 / 包含 → 绿，模糊 → 黄，未命中 → 灰
     val color = matchColor(match)
     Row(
+        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier
             .fillMaxWidth()
@@ -182,27 +183,41 @@ internal fun MatchRow(match: LineMatch) {
             color = color ?: Color.White.copy(alpha = 0.35f),
             style = MaterialTheme.typography.bodyMedium
         )
-        Column(modifier = Modifier.weight(1f)) {
+        // ★ 一行显示：识别文字和命中说明挤在同一行，不换行。
+        //   两段都给 weight(fill = false)：谁短就按需取宽，谁长就在**自己那份**里省略号，
+        //   不会出现「一段把另一段挤没」。两段加起来还放不下时各自收窄，仍然保持一行。
+        Text(
+            text = match.rawText,
+            color = if (match.isHit) Color.White else Color.White.copy(alpha = 0.55f),
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        if (match.isHit) {
             Text(
-                text = match.rawText,
-                color = if (match.isHit) Color.White else Color.White.copy(alpha = 0.55f),
-                style = MaterialTheme.typography.bodyMedium
+                text = "→ " + match.entry?.name + match.noteText(),
+                color = color ?: XiaomiYellow,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
             )
-            if (match.isHit) {
-                Text(
-                    text = buildString {
-                        append("→ ")
-                        append(match.entry?.name)
-                        if (!match.isExact) {
-                            append("（近似 ")
-                            append("%.0f%%".format(match.similarity * 100))
-                            append("）")
-                        }
-                    },
-                    color = color ?: XiaomiYellow,
-                    style = MaterialTheme.typography.labelSmall
-                )
-            }
         }
     }
+}
+
+/**
+ * 命中之后跟在表格项后面的那句说明。
+ *
+ * 用**命中种类**决定文案，不是用相似度：
+ * - 包含 → `（包含）`。它现在是绿色、和「完全相同」长得一样，这句是唯一能看出
+ *   「为什么算命中」的线索
+ * - 模糊 → `（近似 83%）`，这个数字是真编辑距离换算出来的相似度
+ * - 完全相同 → 不加说明，一眼就是对的
+ */
+private fun LineMatch.noteText(): String = when (kind) {
+    MatchKind.Contains -> "（包含）"
+    MatchKind.Fuzzy -> "（近似 " + "%.0f%%".format(similarity * 100) + "）"
+    MatchKind.Exact, MatchKind.None -> ""
 }

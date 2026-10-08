@@ -121,8 +121,10 @@
     margin-top: 5px; color: var(--accent);
     background: rgba(255, 200, 0, .12);
     border-radius: 5px; padding: 3px 5px;
+    /* 每条结果只占一行，放不下就省略号——和 App 里的 matchRow 一致 */
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .ph-hit.exact {           /* 完全相同命中：绿色 */
+  .ph-hit.exact {           /* 完全相同 / 包含：绿色 */
     color: #3ddc84;
     background: rgba(61, 220, 132, .14);
   }
@@ -299,10 +301,11 @@
       </div>
       <div class="ph-spacer"></div>
       <div class="ph-panel">
-        <div class="count">命中 <b>2</b> / 11</div>
-        <div class="ph-hit marked">✓ AZR<br>→ AZR（已标记）</div>
-        <div class="ph-hit exact">✓ AZ-Recongnizer<br>→ AZ-Recongnizer</div>
-        <div class="ph-hit">✓ Alibaba Manufacturer Directory<br>→ Manufacturer（近似 90%）</div>
+        <div class="count">命中 <b>3</b> / 11</div>
+        <div class="ph-hit marked">✓ AZR → AZR（已标记）</div>
+        <div class="ph-hit exact">✓ TH TH AXZZ → TH-AXZZ（包含）</div>
+        <div class="ph-hit exact">✓ AZ-Recongnizer → AZ-Recongnizer</div>
+        <div class="ph-hit">✓ JS 4125 → JS-4128（近似 83%）</div>
         <div class="ph-divider"></div>
         <div class="ph-miss">· Ctrl</div>
         <div class="ph-miss">· Tab</div>
@@ -401,9 +404,11 @@
   </div>
 
   <p class="muted tiny">
-    命中行的颜色分三种：<strong style="color:#3ddc84">绿色 = 完全相同</strong>，
-    <strong style="color:#ffc800">黄色 = 近似</strong>（包含关系或模糊匹配，末尾会标出「近似 83%」），
+    命中行的颜色分三种：<strong style="color:#3ddc84">绿色 = 完全相同</strong> 或
+    <strong style="color:#3ddc84">包含</strong>（表格项确实在这行文字里，末尾标「包含」），
+    <strong style="color:#ffc800">黄色 = 模糊</strong>（OCR 认错了字母，末尾标「近似 83%」），
     <strong style="color:#4fc3f7">蓝色 = 你在表格里手动标记过「已识别」</strong>（优先级最高）。
+    每条结果只占一行。
     一眼能看出这个命中是什么情况。
   </p>
 </section>
