@@ -8,6 +8,9 @@ Kotlin / Compose / 纯本地存储 / 无网络。
 - 编译：JAVA_HOME=<AS 自带 jbr> ./gradlew :app:assembleDebug
 - 看错误：... | grep -E "^e:|BUILD"
 - 相机相关改动必须真机验证。
+- **不要用 monkey 测试**（用户明确要求）：它在真机上乱点，设备私有目录里有真实
+  数据集和相册，有误删风险。`adb shell input` 在 MIUI 上被挡，所以真机点选
+  **只能等待人去手动点击**，不要试图绕过去自动化。
 
 ## 硬约束（改代码前必读）
 1. rotationDegrees 必须传给 ML Kit
