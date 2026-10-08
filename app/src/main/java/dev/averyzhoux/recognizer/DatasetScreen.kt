@@ -55,31 +55,29 @@ internal fun DatasetChip(
 ) {
     val name = dataset?.name ?: "加载中…"
     val count = dataset?.entryCount ?: 0
-    Surface(
-        color = Color.Black.copy(alpha = 0.6f),
-        shape = RoundedCornerShape(50),
-        modifier = modifier.clickable(onClick = onClick)
+    // ★ 和左边的状态文字一样，不加胶囊底色，只显示纯文字。
+    //   点击区还在（整个 Row 可点），只是看不出来了。
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = modifier
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp)
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-        ) {
-            Text(
-                text = name,
-                color = Color.White,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 120.dp)
-            )
-            Text(
-                text = "$count ›",
-                color = XiaomiYellow,
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 1
-            )
-        }
+        Text(
+            text = name,
+            color = Color.White,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 120.dp)
+        )
+        Text(
+            text = "$count ›",
+            color = XiaomiYellow,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1
+        )
     }
 }
 

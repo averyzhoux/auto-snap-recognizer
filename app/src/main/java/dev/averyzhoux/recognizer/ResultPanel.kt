@@ -48,32 +48,29 @@ internal fun StatusBanner(status: OcrStatus, modifier: Modifier = Modifier) {
         }
         is OcrStatus.Failed -> "失败：${status.message}"
     }
-    Surface(
-        color = Color.Black.copy(alpha = 0.6f),
-        shape = RoundedCornerShape(50),
-        modifier = modifier
+    // ★ 刻意**不加胶囊底色**：只让文字浮在取景画面上。
+    //   代价是遇到亮背景（白纸、亮天花板）白字会看不清——
+    //   真遇上了给文字加一层阴影，别把背景加回来。
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = modifier.padding(vertical = 8.dp)
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            if (status is OcrStatus.Recognizing) {
-                CircularProgressIndicator(
-                    color = Color.White,
-                    strokeWidth = 2.dp,
-                    modifier = Modifier.size(14.dp)
-                )
-            }
-            Text(
-                text = text,
+        if (status is OcrStatus.Recognizing) {
+            CircularProgressIndicator(
                 color = Color.White,
-                style = MaterialTheme.typography.bodyMedium,
-                // 被 Row 的 weight 压缩时省略，而不是溢出盖住右侧的数据集胶囊
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(14.dp)
             )
         }
+        Text(
+            text = text,
+            color = Color.White,
+            style = MaterialTheme.typography.bodyMedium,
+            // 被 Row 的 weight 压缩时省略，而不是溢出盖住右侧的数据集入口
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
