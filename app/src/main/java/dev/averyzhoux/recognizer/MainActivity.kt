@@ -586,6 +586,8 @@ fun CameraOcrScreen() {
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.navigationBars)
+                // 版本号已经移出这个 Column、单独压在屏幕最底边了，
+                // 所以这里的间距恢复成加版本号之前的值
                 .padding(bottom = 18.dp)
         ) {
             if (displayMatches != null) {
@@ -649,9 +651,9 @@ fun CameraOcrScreen() {
                         }
                     }
                 }
-    
+
                 Spacer(modifier = Modifier.weight(1f))
-    
+
                 ShutterButton(
                     status = status,
                     enabled = capture != null,
@@ -659,9 +661,9 @@ fun CameraOcrScreen() {
                     externallyDriven = continuousCapture,
                     onClick = { capture?.let(takePicture) }
                 )
-    
+
                 Spacer(modifier = Modifier.weight(1f))
-    
+
                 // 右侧：模式切换，和左侧缩略图对称的一个圆形按钮
                 // 流式分析下这个开关没意义，禁用并显示「连续」
                 ModeSwitch(
@@ -676,6 +678,25 @@ fun CameraOcrScreen() {
                 )
             }
         }
+
+        // 版本号：压在屏幕最底边，在「系统导航键下沿 → 屏幕底边」这段里上下居中。
+        //
+        // ★ 刻意**不**避让 navigationBars —— 要的就是导航键（☰ ◻ ◁）下面那条空隙。
+        //   实机量出来：导航栏高约 47dp、图标高约 14dp 且**在栏内居中**，
+        //   所以图标下沿距底约 16.3dp，「图标下沿 → 屏幕底」这段的中点就是 8.15dp。
+        //   字号 10sp / 行高 14dp 的行盒，垫 2.5dp 后文字墨迹中心落在约 8.3dp。
+        //   —— 这几个数是按真机量出来的，**改字号或行高要一起重算**。
+        //   换成手势导航时底部中间是那颗胶囊、会撞上，那时应改回避让 insets。
+        //
+        // 放在控件 Column **外面**：Column 底边虽然钉在屏幕底部，但它的内容
+        // 从导航栏上沿才开始，所以两者不会抢位置——Column 的底部留白正好让给这一行。
+        // 位置排在 `when (screen)` 之前，这样翻相册/数据集时会被那些覆盖层盖住，
+        // 只在取景页出现。
+        VersionLabel(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 2.5.dp)
+        )
 
         // 粘贴导入
         if (pasteDialogOpen) {

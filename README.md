@@ -303,6 +303,19 @@ workflow 会：跑单测（失败不出包）→ 从 tag 推版本号（`v1.2.3`
 
 `versionCode = major*10000 + minor*100 + patch`（上限：minor / patch 各 99）。
 
+版本号定义在 `app/build.gradle.kts` 的 `defaultConfig`：本地直接跑是 `1.0 / 1`，
+CI 发布时由 workflow 从 git tag 注入。
+
+**取景页最底边会把它显示出来**（小字半透明，格式就是把两个字段直接拼起来：
+`Recognizer<versionCode> <versionName>`，比如 `Recognizer1 v0.1.0dev2`）——
+覆盖安装过好几个版本之后光看界面分不出来装的是哪个，所以留了这一行兜底。
+它压在系统导航栏那条带里、比 `☰ ◻ ◁` 还低，**手势导航下会撞到胶囊**。
+
+> ⚠️ 本地默认值 `v0.1.0dev2` 自带 `v`，而 CI 从 tag 推版本号时**会把 `v` 去掉**
+> （`v1.2.3` → `versionName=1.2.3`）。所以发布版会显示 `recognizer10203 1.2.3`，
+> 和本地的 `recognizer1 v0.1.0dev2` 不一致。要统一的话改一处：
+> 要么把 `defaultConfig` 的默认值去掉 `v`，要么在 workflow 里别剥。
+
 ---
 
 ## 已知限制

@@ -142,6 +142,12 @@
     position: relative; display: flex; align-items: center; gap: 10px;
     padding: 4px 2px 2px;
   }
+  .ph-ver {                 /* 底部居中的版本号：压在系统导航栏那条带里 */
+    position: relative; text-align: center;
+    font-size: 7px; line-height: 1; letter-spacing: .02em;
+    color: rgba(255,255,255,.35);
+    margin-top: -2px;
+  }
   .ph-thumb {
     width: 26px; height: 26px; border-radius: 7px;
     background: linear-gradient(135deg, #3a3a44, #1b1b21);
@@ -310,6 +316,7 @@
         <span class="ph-shutter"><i></i></span>
         <span class="ph-mode">手动</span>
       </div>
+      <div class="ph-ver">Recognizer1 v0.1.0dev2</div>
     </div>
   </div>
 </div>

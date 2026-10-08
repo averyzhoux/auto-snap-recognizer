@@ -19,7 +19,7 @@ android {
         minSdk = 24
         targetSdk = 37
         versionCode = injectedVersionCode ?: 1
-        versionName = injectedVersionName ?: "1.0"
+        versionName = injectedVersionName ?: "v0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -38,6 +38,9 @@ android {
     }
     buildFeatures {
         compose = true
+        // 相机页底部要显示版本号，读的是 BuildConfig.VERSION_NAME / VERSION_CODE。
+        // AGP 8 起 BuildConfig 默认不生成，所以要显式打开。
+        buildConfig = true
     }
 }
 
