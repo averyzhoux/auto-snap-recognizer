@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -120,6 +121,22 @@ internal fun ResultPanel(
                     color = Color.White.copy(alpha = 0.7f),
                     style = MaterialTheme.typography.titleSmall
                 )
+
+                // 「重拍」放在这一行最右侧，而不是单占底部一行——
+                // 它本来就只有两个小字，单开一行白占高度。
+                // 持续推帧（自动 / 流式分析）时它没有意义，所以不显示。
+                if (!continuous) {
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text(
+                        text = "重拍",
+                        color = XiaomiYellow,
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable(onClick = onRetake)
+                            .padding(horizontal = 12.dp, vertical = 2.dp)
+                    )
+                }
             }
 
             if (matches.isEmpty()) {
@@ -134,7 +151,7 @@ internal fun ResultPanel(
                     modifier = Modifier.padding(top = 8.dp)
                 )
             } else {
-                // weight(1f) 让列表吃掉标题/按钮之外的全部空间，超出部分内部滚动
+                // weight(1f) 让列表吃掉标题之外的全部空间，超出部分内部滚动
                 Column(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier
@@ -145,20 +162,6 @@ internal fun ResultPanel(
                 ) {
                     matches.forEach { match -> MatchRow(match) }
                 }
-            }
-
-            // 持续推帧时“重拍”没有意义
-            if (!continuous) {
-                Text(
-                    text = "重拍",
-                    color = XiaomiYellow,
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier
-                        .padding(top = 10.dp)
-                        .clip(RoundedCornerShape(50))
-                        .clickable(onClick = onRetake)
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                )
             }
         }
     }

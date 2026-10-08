@@ -18,8 +18,8 @@ android {
         applicationId = "dev.averyzhoux.recognizer"
         minSdk = 24
         targetSdk = 37
-        versionCode = injectedVersionCode ?: 1
-        versionName = injectedVersionName ?: "v0.1.0"
+        versionCode = injectedVersionCode ?: 2
+        versionName = injectedVersionName ?: "v0.2.0-Athena"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
