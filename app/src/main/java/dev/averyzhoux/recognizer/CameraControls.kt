@@ -274,15 +274,14 @@ internal fun PermissionRationale(
 /**
  * 压在**屏幕最底边**的版本号，小字 + 半透明。
  *
- * 格式就是**把 BuildConfig 的两个字段直接拼起来**：`Recognizer<versionCode> <versionName>`，
- * 比如 `Recognizer1 v0.1.0dev2`。
+ * 格式：`Recognizer<versionCode> <versionName>`，例如 `Recognizer300 v0.3.0-Hephaestus`。
+ * 两个都显示是因为它们回答的是**两个不同的问题**：
+ * - `versionCode`（300）是系统判断新旧用的那个整数，也是装机时真正决定能否覆盖安装的值
+ * - `versionName`（v0.3.0-Hephaestus）是人认得出的「哪一版」
  *
- * 刻意不加也不去掉任何前缀：`versionName` 里带不带 `v` 由 `app/build.gradle.kts`
- * 的 `defaultConfig` 决定（目前本地默认是 `v0.1.0dev2`，带 v），这里原样显示，
- * 免得出现「代码里加一个 v、配置里又有一个 v」拼成 `vv...` 这种事。
- *
- * 值来自 [BuildConfig]，而 BuildConfig 又是 `defaultConfig` 生成的：
- * 本地直接跑用默认值，CI 发布时由 `.github/workflows/release.yml` 从 git tag 注入。
+ * 两个值都来自 [BuildConfig]，而 BuildConfig 由 `app/build.gradle.kts` 的 `defaultConfig`
+ * 生成。**那是唯一的来源**：CI 不从 tag 推、也不注入（见 `tasks/27`）。
+ * 这里不加也不去掉任何前缀，`versionName` 写成什么样就显示成什么样。
  *
  * 放这一行的意义是**出问题时一眼能确认手机上装的到底是哪个构建**——
  * 覆盖安装过好几个版本之后，光看界面是分不出来的。
@@ -291,9 +290,11 @@ internal fun PermissionRationale(
  * 系统导航栏那条带里、比 `☰ ◻ ◁` 还低，并在「导航键下沿 → 屏幕底边」这段里上下居中。
  * 换到**手势导航**时底部中间是那颗胶囊，会撞上——那时应该改成避让 insets。
  *
- * 字号比 [MaterialTheme.typography.labelSmall]（11sp）再小一号：11sp 已经是 Material3
+ * 字号比 [MaterialTheme.typography.labelSmall]（11sp）小两号：11sp 已经是 Material3
  * 里最小的一档了，所以手动压 `fontSize`，并把 `lineHeight` 一起压下来——
- * 行盒高度直接决定下面那个「上下居中」要垫多少 dp，不同步改会算错。
+ * 行盒高度直接决定下面那个「上下居中」要垫多少 dp，**不同步改会算错**。
+ * （下面调用方垫的 2.5dp 就是按 13sp 行盒算的：中心 ≈ 2.5 + 13/2 - 1.2 ≈ 7.8dp，
+ * 目标是「导航键下沿 → 屏幕底」的中点 8.15dp。）
  *
  * 颜色很淡（35% 白）：它只是兜底信息，不该抢取景画面的注意力。
  */
@@ -303,8 +304,8 @@ internal fun VersionLabel(modifier: Modifier = Modifier) {
         text = "Recognizer${BuildConfig.VERSION_CODE} ${BuildConfig.VERSION_NAME}",
         color = Color.White.copy(alpha = 0.35f),
         style = MaterialTheme.typography.labelSmall.copy(
-            fontSize = 10.sp,
-            lineHeight = 14.sp
+            fontSize = 9.sp,
+            lineHeight = 13.sp
         ),
         maxLines = 1,
         modifier = modifier

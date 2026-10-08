@@ -332,20 +332,40 @@ workflow 会：跑单测（失败不出包）→ 从 tag 推版本号（`v1.2.3`
 
 ### 当前版本号规则
 
-`versionCode = major*10000 + minor*100 + patch`（上限：minor / patch 各 99）。
+**版本号和版本名只有一处来源：`app/build.gradle.kts` 的 `defaultConfig`。**
+CI 不从 tag 推、也不用 `-P` 注入。
 
-版本号定义在 `app/build.gradle.kts` 的 `defaultConfig`：本地直接跑是 `1.0 / 1`，
-CI 发布时由 workflow 从 git tag 注入。
+```kotlin
+defaultConfig {
+    versionCode = 300                      // 给系统判断新旧用，单调递增的整数
+    versionName = "v0.3.0-Hephaestus"      // 给人看的，系统「应用信息」页显示的就是它
+}
+```
 
-**取景页最底边会把它显示出来**（小字半透明，格式就是把两个字段直接拼起来：
-`Recognizer<versionCode> <versionName>`，比如 `Recognizer1 v0.1.0dev2`）——
+发新版：**改这两行 → 提交 → 打 tag**。
+
+```bash
+git tag v0.3.0
+git push github v0.3.0
+```
+
+workflow 里只做一件事：**从打好的 APK 里把这两个值读出来**，用来命名 artifact 和写 Release 说明
+（`aapt2 dump badging`）。之所以不直接用 tag 名，是为了万一 tag 和 `build.gradle.kts` 对不上，
+Release 上显示的是**包里真实的版本**——漂了看得出来。
+
+**取景页最底边会把两个都显示出来**（小字半透明，格式 `Recognizer<versionCode> <versionName>`，
+例如 `Recognizer300 v0.3.0-Hephaestus`）——`versionCode` 是系统判断新旧用的整数，
+`versionName` 是人认得出的「哪一版」，两个回答的不是同一个问题。
 覆盖安装过好几个版本之后光看界面分不出来装的是哪个，所以留了这一行兜底。
 它压在系统导航栏那条带里、比 `☰ ◻ ◁` 还低，**手势导航下会撞到胶囊**。
 
-> ⚠️ 本地默认值 `v0.1.0dev2` 自带 `v`，而 CI 从 tag 推版本号时**会把 `v` 去掉**
-> （`v1.2.3` → `versionName=1.2.3`）。所以发布版会显示 `recognizer10203 1.2.3`，
-> 和本地的 `recognizer1 v0.1.0dev2` 不一致。要统一的话改一处：
-> 要么把 `defaultConfig` 的默认值去掉 `v`，要么在 workflow 里别剥。
+> ⚠️ **`versionCode` 以前是 CI 从 tag 算出来注入的**（`major*10000 + minor*100 + patch`），
+> 而本地默认写死 `3`，两者差一个量级：装过 CI 版（300）之后再 `install -r` 本地版（3）
+> 会被 Android 拒（`INSTALL_FAILED_VERSION_DOWNGRADE`），唯一的补救是卸载重装——
+> 数据集和相册都在私有目录里，一卸就没。现在只有一个来源，不会再有这种事。
+>
+> 顺带说下那个旧算法本身的坑：`patch` 只占两位位宽，一过 99 就进位撞 `minor`
+> （`v0.1.100` 和 `v0.2.0` 会算出同一个 versionCode）。现在版本号是手写的，没有这个约束。
 
 ---
 

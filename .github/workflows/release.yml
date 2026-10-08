@@ -9,11 +9,6 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      version:
-        description: '版本号（如 1.2.3）。留空则用 0.0.<run_number>'
-        required: false
-        default: ''
 
 permissions:
   contents: write         # 创建 GitHub Release 需要
@@ -51,37 +46,9 @@ jobs:
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --no-daemon
 
-      # 从 tag 推版本号：v1.2.3 -> versionName=1.2.3，versionCode=10203
-      # 手动触发且没填版本号时，退化成 0.0.<run_number>，保证 versionCode 仍是数字
-      - name: Compute version
-        id: version
-        run: |
-          set -euo pipefail
-
-          RAW="${{ inputs.version }}"
-          if [ -z "$RAW" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-            RAW="${GITHUB_REF_NAME#v}"
-          fi
-
-          if [ -z "$RAW" ]; then
-            MAJOR=0; MINOR=0; PATCH="${GITHUB_RUN_NUMBER}"
-          else
-            VERSION="${RAW#v}"
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-            PATCH="${PATCH%%[!0-9]*}"     # 去掉 -beta.1 之类的后缀
-          fi
-
-          # 任何一段不是纯数字就当 0，避免算 versionCode 时报错
-          [[ "${MAJOR:-}" =~ ^[0-9]+$ ]] || MAJOR=0
-          [[ "${MINOR:-}" =~ ^[0-9]+$ ]] || MINOR=0
-          [[ "${PATCH:-}" =~ ^[0-9]+$ ]] || PATCH=0
-
-          NAME="${MAJOR}.${MINOR}.${PATCH}"
-          CODE=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
-
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          echo "code=$CODE" >> "$GITHUB_OUTPUT"
-          echo "versionName=$NAME  versionCode=$CODE"
+      # 版本号 / 版本名**不在这里算**，也不注入 —— 唯一来源是 app/build.gradle.kts
+      # 的 defaultConfig。下面那句 -P 注入已经删掉了，
+      # 打出来的包就是 build.gradle.kts 里写的那两个值。
 
       # 关键：把 debug keystore 缓存住。
       # 全新 runner 上 ~/.android/debug.keystore 不存在，AGP 会当场随机生成一个，
@@ -100,10 +67,7 @@ jobs:
           key: android-debug-keystore
 
       - name: Build APK
-        run: |
-          ./gradlew assembleDebug --no-daemon \
-            -PversionName=${{ steps.version.outputs.name }} \
-            -PversionCode=${{ steps.version.outputs.code }}
+        run: ./gradlew assembleDebug --no-daemon
 
       - name: Save debug keystore
         if: steps.keystore-restore.outputs.cache-hit != 'true'
@@ -121,6 +85,23 @@ jobs:
           APKSIGNER=$(ls -1 "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
           test -x "$APKSIGNER" || { echo "apksigner not found"; exit 1; }
           "$APKSIGNER" verify --print-certs "$APK"
+
+      # 版本号 / 版本名**只有一个来源**：app/build.gradle.kts。所以这里不计算，
+      # 只是把**已经打进包里**的那两个值读出来，用来命名 artifact 和写 Release 说明。
+      # 好处是：万一 tag 和 build.gradle.kts 对不上，Release 上显示的是包里真实的值，
+      # 而不是 tag 声称的值 —— 漂了看得出来。
+      - name: Read version from the built APK
+        id: version
+        run: |
+          set -euo pipefail
+          AAPT2="$(ls -1 "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)"
+          BADGING="$("$AAPT2" dump badging app/build/outputs/apk/debug/app-debug.apk | head -1)"
+          NAME="$(printf '%s' "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          CODE="$(printf '%s' "$BADGING" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p")"
+          test -n "$NAME" -a -n "$CODE" || { echo "::error::从 APK 里读不到版本号"; exit 1; }
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "包里: versionName=$NAME versionCode=$CODE  (tag=${GITHUB_REF_NAME:-手动触发})"
 
       - name: Collect artifact
         run: |
@@ -152,6 +133,6 @@ jobs:
             > 仅供自己安装体验，**不适合上架或对外分发**。
 
             - 版本名：`${{ steps.version.outputs.name }}`
-            - 版本号：`${{ steps.version.outputs.code }}`
+            - 版本号（versionCode）：`${{ steps.version.outputs.code }}`
             - 最低支持：Android 7.0 (API 24)
           generate_release_notes: true
