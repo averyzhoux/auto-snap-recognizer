@@ -1,6 +1,7 @@
 package dev.averyzhoux.recognizer
 
 import android.content.Context
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -43,6 +44,8 @@ fun CameraPreview(
     /** 这一帧要不要交给上层处理（见下面 ★ 的说明） */
     deliverFrames: Boolean,
     onImageCaptureReady: (ImageCapture) -> Unit,
+    /** 相机绑好了 / 解绑了。上层拿它开关手电筒；解绑时回调 `null` */
+    onCameraReady: (Camera?) -> Unit,
     onFrame: (ImageProxy) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -118,7 +121,7 @@ fun CameraPreview(
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     preview,
                     analysis
-                )
+                ).also(onCameraReady)
             } else {
                 // A/B/C/基础：ImageCapture。C 走 ResolutionSelector 让 HAL 直接出小图
                 val imageCapture = ImageCapture.Builder()
@@ -145,7 +148,7 @@ fun CameraPreview(
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     preview,
                     imageCapture
-                )
+                ).also(onCameraReady)
                 onImageCaptureReady(imageCapture)
             }
         }, ContextCompat.getMainExecutor(context))
@@ -154,6 +157,8 @@ fun CameraPreview(
             // 页面销毁 / 切换管线时解绑，避免相机被占用或回调打到已销毁的 View 上
             analysis?.clearAnalyzer()
             boundCameraProvider?.unbindAll()
+            // 相机没了，手电筒自然也没了；下面那句让上层把图标也熄掉
+            onCameraReady(null)
         }
     }
 }

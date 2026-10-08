@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -190,6 +191,67 @@ internal fun PipelineModeRow(
 
 /** 箭头槽的高度：给上拉箭头留的位置，所有模式项都留同样的高 */
 private val CHEVRON_SLOT = 4.dp
+
+/**
+ * 手电筒开关：取景页左上角、状态文字左边那个闪电。
+ *
+ * 只有亮/灭两种样子：亮着是小米黄，灭着是半透明白。
+ * 刻意和顶部另外两个控件一样**不加胶囊底色**，只让图标浮在取景画面上。
+ *
+ * ★ 触摸区是 40dp、图案 [TorchIcon] 只有 20dp 且居中，所以图案左右各垫了 10dp，
+ *   再加上图案本身在 20dp 里内缩 3.75dp——**光是这个按钮就让两边各占 13.75dp**。
+ *   外层想摆平闪电左右的留白时，要按 `13.75 + 两侧各自的间距` 算，
+ *   不是按 0 算：两边留白相等的条件是**「屏幕边距」=「闪电到下一个控件的间隙」**。
+ */
+@Composable
+internal fun TorchButton(
+    on: Boolean,
+    enabled: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            // 图标本身只有 20dp，撑到 40dp 才好点
+            .size(40.dp)
+            .clip(CircleShape)
+            .clickable(enabled = enabled, onClick = onToggle)
+    ) {
+        TorchIcon(
+            color = when {
+                !enabled -> Color.White.copy(alpha = 0.25f)
+                on -> XiaomiYellow
+                else -> Color.White.copy(alpha = 0.75f)
+            }
+        )
+    }
+}
+
+/**
+ * 闪电图案，自绘。
+ *
+ * 用画的而不是打 `⚡`：那个码位在多数系统上会走**彩色 emoji 字体**，
+ * 渲染出来是一张黄红渐变的小贴纸，跟旁边纯文字的观感完全不搭；
+ * 而且字体里有没有它也没法保证（`⌃` 那次就吃过这个亏）。
+ */
+@Composable
+private fun TorchIcon(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier.size(20.dp)) {
+        val s = size.minDimension / 24f
+        val path = Path().apply {
+            // 24×24 视口里的闪电轮廓，全部直线段
+            moveTo(13f * s, 2f * s)
+            lineTo(4.5f * s, 13.5f * s)
+            lineTo(10.5f * s, 13.5f * s)
+            lineTo(10f * s, 22f * s)
+            lineTo(19.5f * s, 10.5f * s)
+            lineTo(13f * s, 10.5f * s)
+            close()
+        }
+        drawPath(path = path, color = color)
+    }
+}
 
 /**
  * 上拉箭头（一个「⌃」形状的雪佛龙），自绘。

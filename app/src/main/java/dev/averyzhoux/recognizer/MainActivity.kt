@@ -14,9 +14,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.SystemBarStyle
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.TorchState
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -57,6 +59,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Observer
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.averyzhoux.recognizer.ui.theme.RecognizerTheme
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -151,6 +155,40 @@ fun CameraOcrScreen() {
     // 只在相机绑定成功后才非空
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var status by remember { mutableStateOf<OcrStatus>(OcrStatus.Idle) }
+
+    // 观察相机 LiveData（手电筒状态）要它
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // ---------- 手电筒 ----------
+    // 相机对象（绑定时非空）。手电筒是相机的功能，没相机就没得开。
+    var camera by remember { mutableStateOf<Camera?>(null) }
+    // ★ 这个值**跟着相机的实际状态走**，不是我们自己记的：见下面的 torchState 观察。
+    //   自己记会有个说不上来的毛病——把 App 切到后台时相机被关掉、手电筒跟着灭，
+    //   但自己记的变量还停在「开」，回来时图标亮着而灯是灭的。
+    var torchOn by remember { mutableStateOf(false) }
+
+    val setTorch: (Boolean) -> Unit = { on ->
+        // enableTorch 是异步的，结果由 torchState 的观察回填，这里不直接改 torchOn
+        camera?.cameraControl?.enableTorch(on)
+    }
+
+    // 相机的实际手电筒状态 → 图标状态。
+    // 用 observe 而不是自己记：切后台时相机会被关掉、灯跟着灭，
+    // 自己记的变量不会知道，回来就会「图标亮着、灯是灭的」。
+    DisposableEffect(camera) {
+        val cam = camera
+        if (cam == null) {
+            torchOn = false
+            onDispose { }
+        } else {
+            val observer = Observer<Int> { state ->
+                torchOn = state == TorchState.ON
+                Log.d(TAG, "torch ${if (torchOn) "on" else "off"}")
+            }
+            cam.cameraInfo.torchState.observe(lifecycleOwner, observer)
+            onDispose { cam.cameraInfo.torchState.removeObserver(observer) }
+        }
+    }
 
     // 默认手动：点一下快门才拍一帧
     var autoMode by remember { mutableStateOf(false) }
@@ -594,6 +632,7 @@ fun CameraOcrScreen() {
             // CameraX 不会自己停
             deliverFrames = screen == Screen.Camera && !analysisPaused,
             onImageCaptureReady = { imageCapture = it },
+            onCameraReady = { camera = it },
             onFrame = processFrame,
             modifier = Modifier.fillMaxSize()
         )
@@ -604,6 +643,10 @@ fun CameraOcrScreen() {
         //   - Box 拿到「左边缘 → 数据集胶囊」这整块区域（数据集胶囊不被压缩）
         //   - 胶囊**宽度随文字伸缩**（最小就是文字本身的宽度）
         //   - 超过区域宽度时文字省略
+        // 「闪电 → 文字」的间隙和下面 Row 的 start 内边距**必须相等**，闪电左右才一样宽。
+        // 推导见 [TorchButton] 的注释：两边留白 = 这个值 + 13.75dp（触摸区内边距 10 + 图案内缩 3.75）。
+        // 取 2dp → 两边各 15.75dp，正好是原来 30dp 的一半。
+        // end 保持 16dp，那是右边数据集入口的边距，跟闪电无关。
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -611,13 +654,22 @@ fun CameraOcrScreen() {
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.statusBars)
-                .padding(top = 12.dp, start = 16.dp, end = 16.dp)
+                .padding(top = 12.dp, start = 2.dp, end = 16.dp)
         ) {
             Box(
-                modifier = Modifier.weight(1f),
-                contentAlignment = Alignment.CenterStart
+                modifier = Modifier.weight(1f)
             ) {
-                StatusBanner(status = status)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    TorchButton(
+                        on = torchOn,
+                        enabled = camera != null,
+                        onToggle = { setTorch(!torchOn) }
+                    )
+                    StatusBanner(status = status)
+                }
             }
             DatasetChip(
                 dataset = activeDataset,
