@@ -123,16 +123,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: out/*.apk
+          body_path: .github/workflows/release.md
           # body 会被放在自动生成的变更列表前面，所以这个警告一定看得到
-          body: |
-            ## 安装说明
+          # body: |
+          #   ## 安装说明
 
-            下载 `recognizer-${{ steps.version.outputs.name }}-debug.apk` 直接安装即可。
+          #   下载 `recognizer-${{ steps.version.outputs.name }}-debug.apk` 直接安装即可。
 
-            > ⚠️ 这是 **debug 签名**的构建（Android 默认调试密钥），
-            > 仅供自己安装体验，**不适合上架或对外分发**。
+          #   > ⚠️ 这是 **debug 签名**的构建（Android 默认调试密钥），
+          #   > 仅供自己安装体验，**不适合上架或对外分发**。
 
-            - 版本名：`${{ steps.version.outputs.name }}`
-            - 版本号（versionCode）：`${{ steps.version.outputs.code }}`
-            - 最低支持：Android 7.0 (API 24)
-          generate_release_notes: true
+          #   - 版本名：`${{ steps.version.outputs.name }}`
+          #   - 版本号（versionCode）：`${{ steps.version.outputs.code }}`
+          #   - 最低支持：Android 7.0 (API 24)
+          # generate_release_notes: true
