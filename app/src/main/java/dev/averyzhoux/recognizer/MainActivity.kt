@@ -907,8 +907,10 @@ fun CameraOcrScreen() {
                 activeId = activeDataset?.id ?: DatasetStore.BUILT_IN_ID,
                 onBack = { screen = Screen.Camera },
                 onSelect = { meta ->
+                    // ★ 选完**不**自动退回取景页：切换只是把「使用中」挪个位置，
+                    //   留在列表里才能一眼看见换成功没有，也方便接着编辑/再换。
+                    //   （识别引擎和帧缓存由 switchDataset 负责刷新。）
                     switchDataset(meta)
-                    screen = Screen.Camera
                 },
                 onEdit = openEditor,
                 onDelete = { meta ->

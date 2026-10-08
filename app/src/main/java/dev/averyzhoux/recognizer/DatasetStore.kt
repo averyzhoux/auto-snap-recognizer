@@ -15,7 +15,7 @@ data class DatasetMeta(
     val entryCount: Int,
     /** 原始文件名，粘贴导入时为 null */
     val sourceFileName: String?,
-    /** 内置数据集不可删除 */
+    /** 内置数据集不可删除（但可以进编辑页改「已识别」标记） */
     val builtIn: Boolean,
     /** 文本编码，展示用（UTF-8 / GBK） */
     val encoding: String
@@ -73,7 +73,7 @@ class DatasetStore(context: Context) {
 
     /** 读取某个数据集的条目；读不到就回落到内置示例。 */
     fun entriesOf(id: Int): List<Entry> {
-        if (id == BUILT_IN_ID) return Dataset.entries
+        if (id == BUILT_IN_ID) return builtInEntries()
         val file = entriesFile(id)
         if (!file.exists()) return Dataset.entries
         return try {
@@ -95,6 +95,19 @@ class DatasetStore(context: Context) {
             Log.e(TAG, "read entries of dataset $id failed", error)
             Dataset.entries
         }
+    }
+
+    /**
+     * 内置示例数据集的条目：代码里的 [Dataset.entries] + 磁盘上存的「已识别」标记。
+     *
+     * ★ 内置的**条目本身**永远以代码为准，磁盘上只存标记（按名称），
+     *   不存整份 entries.json。这样以后在 [Dataset] 里增删示例项时，
+     *   老用户不会被一份过期的文件盖住，标记也能跟着名字对上。
+     */
+    private fun builtInEntries(): List<Entry> {
+        val marked = readBuiltInMarks()
+        if (marked.isEmpty()) return Dataset.entries
+        return Dataset.entries.map { it.copy(marked = it.name in marked) }
     }
 
     // ---------- 写 ----------
@@ -159,7 +172,8 @@ class DatasetStore(context: Context) {
      * 只动 `<id>.entries.json`，**不碰** `<id>.csv` 原始副本——
      * 原始文件永远保留导入时的样子，以后解析规则升级还能重新解析。
      *
-     * 内置数据集的条目写死在代码里（[Dataset.entries]），改不了，直接返回 false。
+     * 内置数据集（[BUILT_IN_ID]）的条目写死在代码里，这里退化成**只存标记**：
+     * 把 `marked == true` 的名字写进 `builtin.marks.json`，条目本身一个都不落盘。
      *
      * `@Synchronized`：编辑页每点一下标记就写一次整份 JSON。人手点击最快也就百来毫秒
      * 一次，而内部存储写几十 KB 只要 1ms 左右，实际上写不会重叠；加锁是为了万一重叠时
@@ -167,7 +181,7 @@ class DatasetStore(context: Context) {
      */
     @Synchronized
     fun saveEntries(id: Int, entries: List<Entry>): Boolean {
-        if (id == BUILT_IN_ID) return false
+        if (id == BUILT_IN_ID) return writeBuiltInMarks(entries.filter { it.marked }.map { it.name }.toSet())
         return try {
             entriesFile(id).writeText(encodeEntries(entries).toString(), Charsets.UTF_8)
             true
@@ -285,6 +299,30 @@ class DatasetStore(context: Context) {
     private fun csvFile(id: Int) = File(dir, "%06d.csv".format(id))
 
     private fun entriesFile(id: Int) = File(dir, "%06d.entries.json".format(id))
+
+    /** 内置数据集「已识别」标记的落盘文件；不存在 = 一个都没标。 */
+    private fun builtInMarksFile() = File(dir, "builtin.marks.json")
+
+    private fun readBuiltInMarks(): Set<String> = try {
+        val file = builtInMarksFile()
+        if (!file.exists()) {
+            emptySet()
+        } else {
+            val array = JSONArray(file.readText(Charsets.UTF_8))
+            (0 until array.length()).map { array.optString(it) }.filter { it.isNotBlank() }.toSet()
+        }
+    } catch (error: Throwable) {
+        Log.e(TAG, "read built-in marks failed", error)
+        emptySet()
+    }
+
+    private fun writeBuiltInMarks(names: Set<String>): Boolean = try {
+        builtInMarksFile().writeText(JSONArray(names.toList()).toString(), Charsets.UTF_8)
+        true
+    } catch (error: Throwable) {
+        Log.e(TAG, "write built-in marks failed", error)
+        false
+    }
 
     companion object {
         /** 内置示例数据集的 id，永远存在且不可删除 */

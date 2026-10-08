@@ -146,9 +146,10 @@ internal fun DatasetRow(
                 )
             }
 
-            // 内置的条目写死在代码里，既不能删也不能编辑
+            // 内置的那份「示例数据集」条目写死在代码里，所以只能进去改标记、不能删。
+            // 编辑按钮两边都有，删除只给导入的。
+            RowAction(text = "编辑", color = XiaomiYellow, onClick = onEdit)
             if (!meta.builtIn) {
-                RowAction(text = "编辑", color = XiaomiYellow, onClick = onEdit)
                 RowAction(
                     text = "删除",
                     color = Color.White.copy(alpha = 0.55f),
