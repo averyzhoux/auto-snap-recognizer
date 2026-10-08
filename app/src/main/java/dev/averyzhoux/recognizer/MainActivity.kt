@@ -54,6 +54,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -139,13 +140,22 @@ private val XiaomiYellow = Color(0xFFFFC800)
 private val MatchGreen = Color(0xFF3DDC84)
 
 /**
+ * 「已手动标记」用的蓝。
+ *
+ * 和绿色一样都在深色面板上读得清，但色相离得远，不会和精确/近似两种命中混掉。
+ */
+private val MatchBlue = Color(0xFF4FC3F7)
+
+/**
  * 命中项该用什么颜色：
+ * - 表格项被手动标记过「已识别」→ 蓝色（优先级最高，人工标记压过自动判定）
  * - 完全相同（归一化后一致）→ 绿色
  * - 近似（包含 / 模糊 / 别名）→ 黄色
  * - 没命中 → null，由调用方决定灰显
  */
 private fun matchColor(match: LineMatch): Color? = when {
     !match.isHit -> null
+    match.entry?.marked == true -> MatchBlue
     match.isExact -> MatchGreen
     else -> XiaomiYellow
 }
@@ -212,7 +222,7 @@ private data class MatchResult(val matches: List<LineMatch>, val fromCache: Bool
 private const val THUMBNAIL_CACHE_SIZE = 12
 
 /** 当前显示哪一屏 */
-private enum class Screen { Camera, Gallery, Detail, Datasets }
+private enum class Screen { Camera, Gallery, Detail, Datasets, DatasetEdit }
 
 /**
  * 一次待确认的导入。
@@ -352,6 +362,10 @@ fun CameraOcrScreen() {
     // 从文件选择器/粘贴拿到的待确认导入
     var pendingImport by remember { mutableStateOf<PendingImport?>(null) }
     var pasteDialogOpen by remember { mutableStateOf(false) }
+    // 正在编辑的数据集（null = 没进编辑页）。条目单独放一份可变的，
+    // 每点一下标记就整份替换，避免原地改 List 导致 Compose 看不见变化。
+    var editingMeta by remember { mutableStateOf<DatasetMeta?>(null) }
+    var editingEntries by remember { mutableStateOf<List<Entry>>(emptyList()) }
     val scope = rememberCoroutineScope()
 
     // 内部相册：元数据在内存、图片在磁盘
@@ -387,7 +401,44 @@ fun CameraOcrScreen() {
         Log.d(TAG, "gallery loaded ${loaded.size} items from disk")
     }
 
-    // ---------- 数据集：切换 / 导入 ----------
+    // ---------- 数据集：切换 / 导入 / 编辑 ----------
+
+    // 进编辑页：把条目读出来放进内存
+    val openEditor: (DatasetMeta) -> Unit = { meta ->
+        scope.launch {
+            val entries = withContext(Dispatchers.IO) { datasetStore.entriesOf(meta.id) }
+            editingMeta = meta
+            editingEntries = entries
+            screen = Screen.DatasetEdit
+        }
+    }
+
+    // 编辑页点一下某一项的标记框
+    val toggleMark: (Int) -> Unit = { index ->
+        val meta = editingMeta
+        val current = editingEntries
+        if (meta != null && index in current.indices) {
+            val updated = current.toMutableList().also {
+                it[index] = it[index].copy(marked = !it[index].marked)
+            }
+            editingEntries = updated
+
+            // ★ 改的如果正是「使用中」的那份表格，必须马上换掉匹配引擎并清帧缓存：
+            //   匹配引擎里的 Entry 是旧实例（marked 还是老值），
+            //   而帧缓存会让当前画面直接复用旧结果，两个都会让蓝色出不来。
+            if (meta.id == activeDataset?.id) {
+                matcherHolder.value = OcrMatcher(updated)
+                lastSignature = null
+                lastMatches = null
+            }
+
+            // 每次点击就落盘：文件才几十 KB，写完即走，
+            // 比「退出时统一保存」安全（中途被杀也不会丢标记）
+            scope.launch {
+                withContext(Dispatchers.IO) { datasetStore.saveEntries(meta.id, updated) }
+            }
+        }
+    }
 
     // 切换当前数据集：重建匹配引擎，并清掉帧缓存（否则会拿旧表格的结果复用）
     val switchDataset: (DatasetMeta) -> Unit = { meta ->
@@ -878,6 +929,7 @@ fun CameraOcrScreen() {
                     switchDataset(meta)
                     screen = Screen.Camera
                 },
+                onEdit = openEditor,
                 onDelete = { meta ->
                     scope.launch {
                         withContext(Dispatchers.IO) { datasetStore.delete(meta.id) }
@@ -892,6 +944,18 @@ fun CameraOcrScreen() {
                 },
                 onPickFile = { filePicker.launch(arrayOf("*/*")) },
                 onPaste = { pasteDialogOpen = true },
+                modifier = Modifier.fillMaxSize()
+            )
+
+            Screen.DatasetEdit -> DatasetEditScreen(
+                name = editingMeta?.name ?: "数据集",
+                entries = editingEntries,
+                onBack = {
+                    editingMeta = null
+                    editingEntries = emptyList()
+                    screen = Screen.Datasets
+                },
+                onToggle = toggleMark,
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -1629,6 +1693,7 @@ private fun DatasetRow(
     meta: DatasetMeta,
     active: Boolean,
     onSelect: () -> Unit,
+    onEdit: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1687,21 +1752,32 @@ private fun DatasetRow(
                 )
             }
 
-            // 内置的不允许删
+            // 内置的条目写死在代码里，既不能删也不能编辑
             if (!meta.builtIn) {
-                Text(
+                RowAction(text = "编辑", color = XiaomiYellow, onClick = onEdit)
+                RowAction(
                     text = "删除",
                     color = Color.White.copy(alpha = 0.55f),
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier
-                        .padding(start = 10.dp)
-                        .clip(RoundedCornerShape(50))
-                        .clickable(onClick = onDelete)
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                    onClick = onDelete
                 )
             }
         }
     }
+}
+
+/** 数据集行右侧的纯文字操作按钮（编辑 / 删除），样式统一。 */
+@Composable
+private fun RowAction(text: String, color: Color, onClick: () -> Unit) {
+    Text(
+        text = text,
+        color = color,
+        style = MaterialTheme.typography.labelMedium,
+        modifier = Modifier
+            .padding(start = 10.dp)
+            .clip(RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    )
 }
 
 /** 数据集管理页：列出全部数据集，并提供两个导入入口。 */
@@ -1711,6 +1787,7 @@ private fun DatasetScreen(
     activeId: Int,
     onBack: () -> Unit,
     onSelect: (DatasetMeta) -> Unit,
+    onEdit: (DatasetMeta) -> Unit,
     onDelete: (DatasetMeta) -> Unit,
     onPickFile: () -> Unit,
     onPaste: () -> Unit,
@@ -1769,6 +1846,7 @@ private fun DatasetScreen(
                         meta = meta,
                         active = meta.id == activeId,
                         onSelect = { onSelect(meta) },
+                        onEdit = { onEdit(meta) },
                         onDelete = { onDelete(meta) }
                     )
                 }
@@ -1796,6 +1874,164 @@ private fun DatasetScreen(
                     Text("粘贴导入")
                 }
             }
+        }
+    }
+}
+
+/**
+ * 数据集内容编辑页。
+ *
+ * 目前只做一件事：给每一项加/去「已识别」标记（左侧那个小方框）。
+ * 标记只影响识别结果里的**颜色**，不参与匹配——[OcrMatcher] 一行都不认识这个字段。
+ */
+@Composable
+private fun DatasetEditScreen(
+    name: String,
+    entries: List<Entry>,
+    onBack: () -> Unit,
+    onToggle: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    BackHandler(onBack = onBack)
+
+    val markedCount = entries.count { it.marked }
+
+    Surface(color = Color(0xFF101012), modifier = modifier) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+            ) {
+                Text(
+                    text = "‹ 返回",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable(onClick = onBack)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+                Text(
+                    text = name,
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                )
+                Text(
+                    text = "已标记 $markedCount",
+                    color = MatchBlue,
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 4.dp,
+                    bottom = 16.dp
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+            ) {
+                item {
+                    Text(
+                        text = "点一下左边的方框，把这一项标记成「已识别」。标记过的项在识别结果里" +
+                            "显示为蓝色（优先于精确绿 / 近似黄），方便区分「这条我核对过了」" +
+                            "和「这条只是自动命中的」。每次点击立刻存盘。",
+                        color = Color.White.copy(alpha = 0.5f),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
+                // 列表顺序永远不变，用位置当 key 就够
+                itemsIndexed(entries) { index, entry ->
+                    EntryMarkRow(entry = entry, onToggle = { onToggle(index) })
+                }
+            }
+        }
+    }
+}
+
+/** 编辑页的一行：左侧标记框 + 名称 + 别名。 */
+@Composable
+private fun EntryMarkRow(entry: Entry, onToggle: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (entry.marked) MatchBlue.copy(alpha = 0.10f) else Color.White.copy(alpha = 0.05f)
+            )
+            // 整行都能点：小方框只有 22dp，手指不好瞄
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+    ) {
+        MarkBox(marked = entry.marked)
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 12.dp)
+        ) {
+            Text(
+                text = entry.name,
+                color = if (entry.marked) MatchBlue else Color.White,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (entry.aliases.isNotEmpty()) {
+                Text(
+                    text = entry.aliases.joinToString("、"),
+                    color = Color.White.copy(alpha = 0.45f),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 编辑页每行左侧的标记框（对应 `[ ]` / `[✓]`）。
+ *
+ * 未标记是空心框，标记后填蓝并打勾。刻意不用 Material 的 Checkbox：
+ * 一排几十个 Checkbox 视觉太重，而且这里要的是「扫一眼看到哪些勾了」，
+ * 自绘的小方框更容易扫。
+ */
+@Composable
+private fun MarkBox(marked: Boolean) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(22.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (marked) MatchBlue.copy(alpha = 0.25f) else Color.Transparent)
+            .border(
+                width = 1.5.dp,
+                color = if (marked) MatchBlue else Color.White.copy(alpha = 0.35f),
+                shape = RoundedCornerShape(6.dp)
+            )
+    ) {
+        if (marked) {
+            Text(
+                text = "✓",
+                color = MatchBlue,
+                style = MaterialTheme.typography.labelLarge
+            )
         }
     }
 }

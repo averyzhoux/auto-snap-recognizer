@@ -85,7 +85,10 @@ class DatasetStore(context: Context) {
                 val aliasArray = obj.optJSONArray("aliases") ?: JSONArray()
                 Entry(
                     name = name,
-                    aliases = (0 until aliasArray.length()).map { aliasArray.optString(it) }
+                    aliases = (0 until aliasArray.length()).map { aliasArray.optString(it) },
+                    // ★ 兼容旧文件：早期的 entries.json 里没有 marked 字段，
+                    //   optBoolean 读不到就回落到 false，老数据自动视作「没标记过」
+                    marked = obj.optBoolean("marked", false)
                 )
             }.ifEmpty { Dataset.entries }
         } catch (error: Throwable) {
@@ -150,9 +153,48 @@ class DatasetStore(context: Context) {
         )
     }
 
+    /**
+     * 覆写某个数据集的条目（编辑页改「已标记」用）。
+     *
+     * 只动 `<id>.entries.json`，**不碰** `<id>.csv` 原始副本——
+     * 原始文件永远保留导入时的样子，以后解析规则升级还能重新解析。
+     *
+     * 内置数据集的条目写死在代码里（[Dataset.entries]），改不了，直接返回 false。
+     *
+     * `@Synchronized`：编辑页每点一下标记就写一次整份 JSON。人手点击最快也就百来毫秒
+     * 一次，而内部存储写几十 KB 只要 1ms 左右，实际上写不会重叠；加锁是为了万一重叠时
+     * 不会两个线程交错写出半个文件（半个 JSON 会让整个数据集读不出来）。
+     */
+    @Synchronized
+    fun saveEntries(id: Int, entries: List<Entry>): Boolean {
+        if (id == BUILT_IN_ID) return false
+        return try {
+            entriesFile(id).writeText(encodeEntries(entries).toString(), Charsets.UTF_8)
+            true
+        } catch (error: Throwable) {
+            Log.e(TAG, "save entries of dataset $id failed", error)
+            false
+        }
+    }
+
     // ---------- 内部实现 ----------
 
     private data class Index(val activeId: Int, val datasets: List<DatasetMeta>)
+
+    /** 条目列表 → JSON。导入和编辑页共用，保证两边写出来的格式一致。 */
+    private fun encodeEntries(entries: List<Entry>): JSONArray {
+        val array = JSONArray()
+        entries.forEach { entry ->
+            array.put(
+                JSONObject().apply {
+                    put("name", entry.name)
+                    put("aliases", JSONArray(entry.aliases))
+                    put("marked", entry.marked)
+                }
+            )
+        }
+        return array
+    }
 
     private fun persist(
         parsed: ParseResult,
@@ -167,17 +209,8 @@ class DatasetStore(context: Context) {
         // 原始副本
         csvFile(id).writeBytes(rawBytes)
 
-        // 解析后的条目
-        val array = JSONArray()
-        parsed.entries.forEach { entry ->
-            array.put(
-                JSONObject().apply {
-                    put("name", entry.name)
-                    put("aliases", JSONArray(entry.aliases))
-                }
-            )
-        }
-        entriesFile(id).writeText(array.toString(), Charsets.UTF_8)
+        // 解析后的条目（刚导入的都没标记）
+        entriesFile(id).writeText(encodeEntries(parsed.entries).toString(), Charsets.UTF_8)
 
         val meta = DatasetMeta(
             id = id,

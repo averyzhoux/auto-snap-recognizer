@@ -126,6 +126,16 @@
     color: #3ddc84;
     background: rgba(61, 220, 132, .14);
   }
+  .ph-hit.marked {          /* 手动标记「已识别」：蓝色 */
+    color: #4fc3f7;
+    background: rgba(79, 195, 247, .16);
+  }
+  .ph-modes {
+    display: flex; gap: 2px; padding: 2px 4px 4px;
+    font-size: 8px; color: rgba(255,255,255,.55);
+  }
+  .ph-modes span { flex: 1; text-align: center; }
+  .ph-modes span.on { color: var(--accent); }
   .ph-divider { height: 1px; background: rgba(255,255,255,.18); margin: 6px 0; }
   .ph-miss { color: rgba(255,255,255,.55); }
   .ph-bar {
@@ -283,13 +293,17 @@
       </div>
       <div class="ph-spacer"></div>
       <div class="ph-panel">
-        <div class="count">命中 <b>1</b> / 11</div>
+        <div class="count">命中 <b>2</b> / 11</div>
+        <div class="ph-hit marked">✓ TH-6983<br>→ TH-6983（已标记）</div>
         <div class="ph-hit exact">✓ AZ-Recongnizer<br>→ AZ-Recongnizer</div>
         <div class="ph-hit">✓ Alibaba Manufacturer Directory<br>→ Manufacturer（近似 90%）</div>
         <div class="ph-divider"></div>
         <div class="ph-miss">· Ctrl</div>
         <div class="ph-miss">· Tab</div>
         <div class="ph-miss">· Caps Lock</div>
+      </div>
+      <div class="ph-modes">
+        <span class="on">标准</span><span>省内存</span><span>降采样</span><span>小图直出</span><span>流式分析</span>
       </div>
       <div class="ph-bar">
         <span class="ph-thumb"></span>
@@ -335,6 +349,11 @@
       <p>拍摄自动存档（预览图 + 识别结果），可回看、可点开看逐行结果。连续扫描时按 3 秒节流，不会把相册撑爆。</p>
     </div>
     <div class="card">
+      <span class="ic">🔵</span>
+      <h4>标记「已识别」</h4>
+      <p>数据集编辑页里可以逐项打勾，标记过的项在识别结果里显示成蓝色——扫货时当台账用，核对过的一条条勾掉，一眼看出哪些处理过了。</p>
+    </div>
+    <div class="card">
       <span class="ic">📋</span>
       <h4>多个数据集</h4>
       <p>表格可导入多份、随时切换，跨重启保留。右上角随时看到当前用的是哪份。</p>
@@ -375,9 +394,10 @@
   </div>
 
   <p class="muted tiny">
-    命中行的颜色分两种：<strong style="color:#3ddc84">绿色 = 完全相同</strong>，
-    <strong style="color:#ffc800">黄色 = 近似</strong>（包含关系或模糊匹配，末尾会标出「近似 83%」）。
-    一眼能看出这个命中是否精确。
+    命中行的颜色分三种：<strong style="color:#3ddc84">绿色 = 完全相同</strong>，
+    <strong style="color:#ffc800">黄色 = 近似</strong>（包含关系或模糊匹配，末尾会标出「近似 83%」），
+    <strong style="color:#4fc3f7">蓝色 = 你在表格里手动标记过「已识别」</strong>（优先级最高）。
+    一眼能看出这个命中是什么情况。
   </p>
 </section>
 

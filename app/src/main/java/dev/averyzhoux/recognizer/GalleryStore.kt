@@ -173,7 +173,12 @@ class GalleryStore(context: Context) {
                 JSONObject().apply {
                     put("text", match.rawText)
                     // 没命中就不写 entry
-                    match.entry?.let { put("entry", it.name) }
+                    match.entry?.let {
+                        put("entry", it.name)
+                        // 一并存下「已标记」：以后回看这张照片时，
+                        // 蓝色标记要和拍摄当时一致，不能因为数据集后来改了而变色
+                        put("marked", it.marked)
+                    }
                     match.matchedOn?.let { put("matchedOn", it) }
                     put("sim", match.similarity.toDouble())
                     put("hit", match.isHit)
@@ -196,8 +201,11 @@ class GalleryStore(context: Context) {
             val entryName = if (obj.has("entry")) obj.optString("entry") else null
             LineMatch(
                 rawText = obj.optString("text"),
-                // 别名等信息不需要，展示只用得到名字
-                entry = entryName?.let { Entry(name = it) },
+                // 别名等信息不需要，展示只用得到名字。
+                // ★ 兼容旧照片：早期 JSON 里没有 marked，读不到就当没标记过
+                entry = entryName?.let {
+                    Entry(name = it, marked = obj.optBoolean("marked", false))
+                },
                 matchedOn = if (obj.has("matchedOn")) obj.optString("matchedOn") else null,
                 similarity = obj.optDouble("sim", 0.0).toFloat()
             )

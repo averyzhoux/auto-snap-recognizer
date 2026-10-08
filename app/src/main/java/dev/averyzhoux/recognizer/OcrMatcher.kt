@@ -5,7 +5,15 @@ data class Entry(
     /** 标准名称，例如 "Serial Number" */
     val name: String,
     /** 同一行的其他写法，例如 "S/N"、"SN" */
-    val aliases: List<String> = emptyList()
+    val aliases: List<String> = emptyList(),
+    /**
+     * 用户手动标记的「已识别过」。
+     *
+     * 这是**纯人工**的状态（在数据集编辑页点出来的），比对引擎完全不看它、
+     * 匹配逻辑一行都不受影响。它只影响命中之后**显示成什么颜色**：
+     * 标记过的走蓝色，用来区分「这条我刚核对完了」和「这条是自动命中的」。
+     */
+    val marked: Boolean = false
 )
 
 /** 某一行 OCR 文本的比对结果。 */
