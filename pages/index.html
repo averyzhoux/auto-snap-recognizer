@@ -117,6 +117,20 @@
   }
   .ph-panel .count { color: var(--dim); }
   .ph-panel .count b { color: var(--accent); font-size: 11px; }
+  /* 「命中 X / Y」右边的颜色构成：一个色点 + 该颜色的条数，和 App 里的 HitColorCounts 一致。
+     顺序是 黄→蓝→绿（**不是**枚举顺序，也不是下面模式行提示点的绿黄蓝），数量 0 的整组不画。
+     点只有 3px，靠颜色区分；数字和点同色，一眼看出这一对是一体的。 */
+  .ph-cc {
+    display: inline-flex; align-items: center; gap: 2px;
+    margin-left: 6px; font-size: 9px;
+  }
+  .ph-cc i {
+    width: 3px; height: 3px; border-radius: 50%;
+    background: currentColor;       /* 跟着 .ph-cc.y/.b/.g 的颜色走 */
+  }
+  .ph-cc.y { color: #ffc800; }
+  .ph-cc.b { color: #4fc3f7; }
+  .ph-cc.g { color: #3ddc84; }
   .ph-hit {
     margin-top: 5px; color: var(--accent);
     background: rgba(255, 200, 0, .12);
@@ -170,7 +184,11 @@
   }
   .ph-dot-demo > span { text-align: center; }
   .ph-divider { height: 1px; background: rgba(255,255,255,.18); margin: 6px 0; }
-  .ph-miss { color: rgba(255,255,255,.55); }
+  /* 未命中的行也是**一行**（和 .ph-hit 同一条规矩），只是颜色更淡 */
+  .ph-miss {
+    color: rgba(255,255,255,.55);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .ph-bar {
     position: relative; display: flex; align-items: center; gap: 10px;
     padding: 4px 2px 2px;
@@ -336,12 +354,14 @@
     <!-- 纯 CSS 画的应用界面示意 -->
     <div class="phone" aria-hidden="true">
       <div class="ph-row">
-        <span class="ph-pill">命中 <b>3</b> / 20</span>
+        <!-- 顶部状态胶囊和下面的结果面板说的是**同一帧**，所以数字必须一致 -->
+        <span class="ph-pill">命中 <b>4</b> / 11</span>
         <span class="ph-pill right">标签表 <b>102 ›</b></span>
       </div>
       <div class="ph-spacer"></div>
       <div class="ph-panel">
-        <div class="count">命中 <b>3</b> / 11</div>
+        <!-- 数字要和自己列出的行对得上：这里 4 条命中 = 蓝 1 + 绿 2 + 黄 1 -->
+        <div class="count">命中 <b>4</b> / 11<span class="ph-cc y"><i></i>1</span><span class="ph-cc b"><i></i>1</span><span class="ph-cc g"><i></i>2</span></div>
         <div class="ph-hit marked">✓ AZR → AZR（已标记）</div>
         <div class="ph-hit exact">✓ TH TH AXZZ → TH-AXZZ（包含）</div>
         <div class="ph-hit exact">✓ AZ-Recongnizer → AZ-Recongnizer</div>
@@ -359,7 +379,7 @@
         <span class="ph-shutter"><i></i></span>
         <span class="ph-mode">手动</span>
       </div>
-      <div class="ph-ver">Recognizer304 v0.3.4</div>
+      <div class="ph-ver">Recognizer305 v0.3.5-Hephaestus</div>
     </div>
   </div>
 </div>
@@ -471,6 +491,12 @@
     <strong style="color:#4fc3f7">蓝色 = 你在表格里手动标记过「已识别」</strong>（优先级最高）。
     每条结果只占一行。
     一眼能看出这个命中是什么情况。
+  </p>
+
+  <p class="muted tiny">
+    「命中 X / Y」右边还会按颜色跟几个小点 + 数字（顺序 黄 → 蓝 → 绿），
+    表示这次命中里每种颜色各几条——三组数字加起来正好是 X。
+    某个颜色一条都没有时，那一组不显示。
   </p>
 </section>
 

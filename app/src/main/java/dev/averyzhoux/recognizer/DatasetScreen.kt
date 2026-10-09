@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import java.util.Date
 import java.util.Locale
@@ -373,7 +374,7 @@ internal fun EntryMarkRow(entry: Entry, onToggle: () -> Unit) {
             .clickable(onClick = onToggle)
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
-        MarkBox(marked = entry.marked)
+        MarkToggle(marked = entry.marked)
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -401,18 +402,47 @@ internal fun EntryMarkRow(entry: Entry, onToggle: () -> Unit) {
 }
 
 /**
- * 编辑页每行左侧的标记框（对应 `[ ]` / `[✓]`）。
+ * 标记框（对应 `[ ]` / `[✓]`）。数据集编辑页和取景页结果行共用这一份画法。
  *
- * 未标记是空心框，标记后填蓝并打勾。刻意不用 Material 的 Checkbox：
- * 一排几十个 Checkbox 视觉太重，而且这里要的是「扫一眼看到哪些勾了」，
- * 自绘的小方框更容易扫。
+ * - [onClick] 为 null：**只显示**。数据集编辑页用这种——那一行整行可点，
+ *   框自己不接点击，免得嵌套的点击区互抢事件。
+ * - [onClick] 不为 null：框外面套一圈透明触摸区。方框只有 20dp 出头，手指瞄不准；
+ *   ★ 触摸区靠 [touchSize] 撑开、方块仍在触摸区**正中**，不能用 padding 去凑——
+ *   触摸区比图形大多少，视觉重心就被压低多少（任务 32 记过这个坑）。
+ *
+ * 自绘而不是用 Material 的 Checkbox：一排几十个 Checkbox 视觉太重，
+ * 而这里要的是「扫一眼看到哪些勾了」，小方框更容易扫。
  */
 @Composable
-internal fun MarkBox(marked: Boolean) {
+internal fun MarkToggle(
+    marked: Boolean,
+    onClick: (() -> Unit)? = null,
+    size: Dp = 22.dp,
+    /** 触摸区边长；要 >= [size]，否则方块会被裁掉 */
+    touchSize: Dp = 26.dp
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = if (onClick == null) {
+            Modifier.size(size)
+        } else {
+            Modifier
+                .size(touchSize)
+                .clip(RoundedCornerShape(50))
+                .clickable(onClick = onClick)
+        }
+    ) {
+        MarkSquare(marked = marked, size = size)
+    }
+}
+
+/** 标记框的**图形部分**，不含点击逻辑（[MarkToggle] 和编辑页共用）。 */
+@Composable
+private fun MarkSquare(marked: Boolean, size: Dp) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .size(22.dp)
+            .size(size)
             .clip(RoundedCornerShape(6.dp))
             .background(if (marked) MatchBlue.copy(alpha = 0.25f) else Color.Transparent)
             .border(

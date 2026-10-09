@@ -3,6 +3,7 @@ package dev.averyzhoux.recognizer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
@@ -78,6 +80,10 @@ internal fun StatusBanner(status: OcrStatus, modifier: Modifier = Modifier) {
  * 比对结果面板：逐行显示，命中的行打勾并标出命中的表格项。
  *
  * [continuous] 表示相机在持续推帧（自动模式 / 流式），此时「重拍」没有意义。
+ *
+ * [onToggleMark] 不为 null 时，命中的行尾多一个「确认标记」小方框（开关语义）。
+ * ★ 默认 null = 不显示按钮，所以相册（详情 / 网格）的两个调用点一个字都不用改，
+ *   那里天然不会出现这个按钮。
  */
 @Composable
 internal fun ResultPanel(
@@ -85,9 +91,13 @@ internal fun ResultPanel(
     ocrFailed: Boolean,
     continuous: Boolean,
     onRetake: () -> Unit,
+    onToggleMark: ((Entry) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val hitCount = matches.count { it.isHit }
+    // 「命中 X / Y」里那个 X 按**显示颜色**拆开：这次命中里绿/黄/蓝各有几条。
+    // key 为 null 的是未命中的行，下面按颜色取的时候自然被忽略。
+    val colorCounts = matches.groupingBy { hitColorOf(it) }.eachCount()
     Surface(
         color = Color.Black.copy(alpha = 0.72f),
         shape = RoundedCornerShape(20.dp),
@@ -117,6 +127,13 @@ internal fun ResultPanel(
                     text = " / ${matches.size}",
                     color = Color.White.copy(alpha = 0.7f),
                     style = MaterialTheme.typography.titleSmall
+                )
+
+                // 命中的构成：黄/蓝/绿各几条。紧跟在「命中 X / Y」右边，
+                // 所以那个 X 一眼就能拆开看（三组数字之和正好等于 X）。
+                HitColorCounts(
+                    counts = colorCounts,
+                    modifier = Modifier.padding(start = 10.dp)
                 )
 
                 // 「重拍」放在这一行最右侧，而不是单占底部一行——
@@ -157,18 +174,83 @@ internal fun ResultPanel(
                         .padding(top = 10.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    matches.forEach { match -> MatchRow(match) }
+                    matches.forEach { match ->
+                        MatchRow(match = match, onToggleMark = onToggleMark)
+                    }
                 }
             }
         }
     }
 }
 
-/** 单行的比对结果：命中 = 高亮 + 打勾，未命中 = 灰显。整条**只占一行**。 */
+/**
+ * 「命中 X / Y」右边那几组「颜色点 + 数字」：这次命中里各颜色各有几条。
+ *
+ * 例：黄 1 条、绿 1 条 → `● 1  ● 1`（两个点分别是黄和绿）。
+ *
+ * ★ 点数**不随数量增加**，一个颜色就一个点，数量由后面的数字表达——
+ *   所以这里宽度是固定的（最多三组），不会因为命中 11 条就把这一行撑爆。
+ *
+ * ★ 顺序是需求指定的 **黄 → 蓝 → 绿**，和 [HitColor] 的枚举顺序、以及「条件暂停」
+ *   那排提示点的顺序（绿黄蓝）**都不一样**。看着别扭也别顺手「修正」成枚举顺序。
+ *
+ * 数量为 0 的颜色整组不画（没命中的颜色不需要占位）。
+ */
 @Composable
-internal fun MatchRow(match: LineMatch) {
+private fun HitColorCounts(counts: Map<HitColor?, Int>, modifier: Modifier = Modifier) {
+    val ordered = HIT_COUNT_ORDER.mapNotNull { kind ->
+        counts[kind]?.takeIf { it > 0 }?.let { kind to it }
+    }
+    if (ordered.isEmpty()) return
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = modifier
+    ) {
+        ordered.forEach { (kind, count) ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                // 点和它自己的数字贴紧，组和组之间才拉开（就是上面那个 8dp）
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(HIT_COUNT_DOT)
+                        .clip(CircleShape)
+                        .background(kind.color)
+                )
+                Text(
+                    text = "$count",
+                    // 数字和点同色：一眼能看出这一对是一体的，也对得上结果行里的颜色
+                    color = kind.color,
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+        }
+    }
+}
+
+/** 「命中 X / Y」右边那几组的显示顺序：需求指定，不是枚举顺序 */
+private val HIT_COUNT_ORDER = listOf(HitColor.Yellow, HitColor.Blue, HitColor.Green)
+
+/** 颜色点直径（= 半径 × 2）。刻意画得很小，只当颜色标记，不抢戏 */
+private val HIT_COUNT_DOT = 3.dp
+
+/**
+ * 单行的比对结果：命中 = 高亮 + 打勾，未命中 = 灰显。整条**只占一行**。
+ *
+ * [onToggleMark] 不为 null 且这一行命中时，行尾多一个「确认标记」小方框；
+ * 未命中的行没有表格项可标记，所以不给按钮。相册不传这个参数，那里不会出现按钮。
+ */
+@Composable
+internal fun MatchRow(
+    match: LineMatch,
+    onToggleMark: ((Entry) -> Unit)? = null
+) {
     // 完全相同 / 包含 → 绿，模糊 → 黄，未命中 → 灰
     val color = matchColor(match)
+    val entry = match.entry
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -186,22 +268,41 @@ internal fun MatchRow(match: LineMatch) {
         // ★ 一行显示：识别文字和命中说明挤在同一行，不换行。
         //   两段都给 weight(fill = false)：谁短就按需取宽，谁长就在**自己那份**里省略号，
         //   不会出现「一段把另一段挤没」。两段加起来还放不下时各自收窄，仍然保持一行。
-        Text(
-            text = match.rawText,
-            color = if (match.isHit) Color.White else Color.White.copy(alpha = 0.55f),
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false)
-        )
-        if (match.isHit) {
+        //
+        //   外面再套一层 weight(1f) 的 Row，是为了把行尾的按钮**顶到最右**：
+        //   两段文字都是 fill = false、剩多少才占多少，不套这一层的话按钮会紧跟在
+        //   文字后面，每行的位置都不一样。
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f)
+        ) {
             Text(
-                text = "→ " + match.entry?.name + match.noteText(),
-                color = color ?: XiaomiYellow,
-                style = MaterialTheme.typography.labelSmall,
+                text = match.rawText,
+                color = if (match.isHit) Color.White else Color.White.copy(alpha = 0.55f),
+                style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false)
+            )
+            if (match.isHit) {
+                Text(
+                    text = "→ " + entry?.name + match.noteText(),
+                    color = color ?: XiaomiYellow,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+            }
+        }
+        // 行尾的确认标记。★ 它改的是**数据集里那一项**（[Entry.marked]），不是这一帧的
+        // 临时状态，所以和数据集编辑页是同一个开关。
+        if (entry != null && onToggleMark != null) {
+            MarkToggle(
+                marked = entry.marked,
+                onClick = { onToggleMark(entry) },
+                size = 20.dp
             )
         }
     }

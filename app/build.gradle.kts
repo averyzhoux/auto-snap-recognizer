@@ -27,8 +27,8 @@ android {
         //   versionName：给人看的。系统的「应用信息」页显示的就是它，
         //     所以写有意义的版本名，不要写成一个数字。
 
-        versionCode = 304
-        versionName = "v0.3.4-Hephaestus"
+        versionCode = 305
+        versionName = "v0.3.5-Hephaestus"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

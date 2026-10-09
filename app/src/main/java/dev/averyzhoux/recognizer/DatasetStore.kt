@@ -330,3 +330,23 @@ class DatasetStore(context: Context) {
         private const val TAG = "Recognizer"
     }
 }
+
+/**
+ * 按**名字**翻转某一项的「已识别」标记；名字对不上返回 null。
+ *
+ * 取景页结果行行尾那个确认框调的就是它——它改的是数据集里那一项本身，
+ * 和数据集编辑页是同一个开关，不是某一帧的临时状态。
+ *
+ * ★ 按名字而不是按下标：取景页手上只有 `Entry`（匹配时带出来的实例），
+ *   并不知道它在当前列表里的位置。
+ *
+ * 抽成顶层函数是为了能单测：名字对不上时**必须什么都不做**，
+ * 否则一次误点会改到别的项，而且不报错。
+ */
+internal fun toggleEntryMarked(entries: List<Entry>, name: String): List<Entry>? {
+    val index = entries.indexOfFirst { it.name == name }
+    if (index < 0) return null
+    return entries.toMutableList().also {
+        it[index] = it[index].copy(marked = !it[index].marked)
+    }
+}

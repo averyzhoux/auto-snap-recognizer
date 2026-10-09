@@ -51,5 +51,7 @@ google-services.json
 # Android Profiling
 *.hprof
 
-# project temporary files
+# user project temporary files
 tmp/
+# ai agent 的临时产物（截图、裁剪脚本等）按 AGENTS.md 要求放这里
+temp/

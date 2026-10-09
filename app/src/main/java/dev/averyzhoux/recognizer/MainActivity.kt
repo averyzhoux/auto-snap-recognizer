@@ -145,6 +145,15 @@ fun CameraOcrScreen() {
     // 这样**正在跑的自动循环**捕获的是 holder 而不是旧的 matcher 实例，
     // 下一次拍照立刻就用上新表格（否则要等循环重启才生效）。
     val matcherHolder = remember { mutableStateOf(OcrMatcher(Dataset.entries)) }
+
+    /**
+     * ★「使用中」数据集当前的条目（内存镜像）。
+     *
+     * 取景页结果行行尾点标记时，手上必须有这份列表才能改；而 [matcherHolder] 里的
+     * `OcrMatcher` 只进不出，拿不回来。**所有重建 matcher 的地方都要同步更新它**，
+     * 否则会把标记写回一份过期的条目，静默丢掉别人的改动。
+     */
+    var activeEntries by remember { mutableStateOf<List<Entry>>(emptyList()) }
     DisposableEffect(Unit) {
         onDispose {
             textRecognizer.close()
@@ -238,6 +247,7 @@ fun CameraOcrScreen() {
         datasets.addAll(list)
         activeDataset = list.firstOrNull { it.id == activeId } ?: list.first()
         matcherHolder.value = OcrMatcher(entries)
+        activeEntries = entries
         Log.d(TAG, "dataset loaded: '${activeDataset?.name}' ${entries.size} entries")
     }
 
@@ -276,12 +286,49 @@ fun CameraOcrScreen() {
             //   而帧缓存会让当前画面直接复用旧结果，两个都会让蓝色出不来。
             if (meta.id == activeDataset?.id) {
                 matcherHolder.value = OcrMatcher(updated)
+                activeEntries = updated
                 lastSignature = null
                 lastMatches = null
             }
 
             // 每次点击就落盘：文件才几十 KB，写完即走，
             // 比「退出时统一保存」安全（中途被杀也不会丢标记）
+            scope.launch {
+                withContext(Dispatchers.IO) { datasetStore.saveEntries(meta.id, updated) }
+            }
+        }
+    }
+
+    /**
+     * 取景页结果行行尾的「确认标记」：按名字翻转数据集里那一项的 [Entry.marked]。
+     *
+     * ★ 它改的**就是数据集里的标记**（和数据集编辑页同一个开关），不是这一帧的临时
+     *   状态——所以下次再扫到、以及所有走 [matchColor] 的地方都会跟着变。
+     *
+     * 显示时机由界面把关：只在**没在连续抓帧**时（手动模式 / 各模式条件暂停停住之后）
+     * 才把这个回调传给 [ResultPanel]，自动和流式运行中按钮根本不出现。
+     */
+    val toggleEntryMark: (Entry) -> Unit = { entry ->
+        val meta = activeDataset
+        val updated = if (meta != null && activeEntries.isNotEmpty()) {
+            toggleEntryMarked(activeEntries, entry.name)
+        } else {
+            null
+        }
+        if (meta != null && updated != null) {
+            activeEntries = updated
+
+            // ★ 和编辑页那两个坑一样，一个都不能省：
+            //   1) 匹配引擎里的 Entry 是旧实例（marked 还是老值），必须整个换掉
+            //   2) 帧缓存会让画面不动时直接复用旧 matches，清掉才会重新跑
+            matcherHolder.value = OcrMatcher(updated)
+            lastSignature = null
+            lastMatches = null
+
+            // 3) 就地把**当前显示的这一份**结果也刷掉：手动模式下本来就没有下一帧，
+            //    不刷的话点了按钮要等到重拍才变色，看起来像没反应。
+            status = status.withEntryMarks(updated)
+
             scope.launch {
                 withContext(Dispatchers.IO) { datasetStore.saveEntries(meta.id, updated) }
             }
@@ -296,6 +343,7 @@ fun CameraOcrScreen() {
                 datasetStore.entriesOf(meta.id)
             }
             matcherHolder.value = OcrMatcher(entries)
+            activeEntries = entries
             activeDataset = meta
             lastSignature = null
             lastMatches = null
@@ -413,6 +461,27 @@ fun CameraOcrScreen() {
      */
     val continuousCapture by remember {
         derivedStateOf { pipeline.usesAnalysis || autoMode }
+    }
+
+    /**
+     * 相机**此刻真的在连续抓帧**吗。取景页结果行行尾的确认标记只在它「否」时出现。
+     *
+     * ★ 判据不是 [continuousCapture]：那个对流式恒为 true（`usesAnalysis` 恒真），
+     *   而流式被条件暂停停下时 `analysisPaused = true`、其实已经没在抓帧了，
+     *   用 [continuousCapture] 会导致「流式的条件暂停」永远看不到按钮。
+     *
+     * 覆盖到的时机（就是需求要的「手动模式 + 每个模式的条件暂停」）：
+     * | 状态 | 结果 |
+     * |---|---|
+     * | 四条非流式管线的手动模式 | 显示 |
+     * | 四条非流式管线被条件暂停（`autoMode` 被置回 false） | 显示 |
+     * | 流式被条件暂停 / 被用户按暂停 | 显示 |
+     * | 自动 / 流式正在跑 | 不显示 |
+     *
+     * 正在跑的时候必须藏起来：结果每秒被新帧整体替换，手指刚瞄好的行会跳走。
+     */
+    val activelyCapturing by remember {
+        derivedStateOf { if (pipeline.usesAnalysis) !analysisPaused else autoMode }
     }
 
     // 相册节流用的两个记录：上次存下来的那帧指纹、上次存的时间。
@@ -775,6 +844,8 @@ fun CameraOcrScreen() {
                         lastSignature = null
                         lastMatches = null
                     },
+                    // 没在连续抓帧才给按钮（null = 不显示）。见 [activelyCapturing]。
+                    onToggleMark = if (activelyCapturing) null else toggleEntryMark,
                     modifier = Modifier
                         .padding(horizontal = 16.dp)
                         .padding(bottom = 12.dp)

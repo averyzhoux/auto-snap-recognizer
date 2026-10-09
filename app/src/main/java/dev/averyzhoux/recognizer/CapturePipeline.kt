@@ -139,6 +139,35 @@ internal fun OcrStatus.matchesOrNull(): List<LineMatch>? = when (this) {
 }
 
 /**
+ * 把正在显示的结果里各表格项换成 [entries] 里的**新实例**，让「点完标记立刻变色」。
+ *
+ * ★ 只改**内存里正在显示的这一份**，不落盘、不参与匹配。真相源始终是数据集和
+ *   [OcrMatcher]（调用方已经换过了），下一帧识别会自己带上新值；这里只是补上
+ *   「手动模式下没有下一帧」这个缺口——否则点了按钮要等重拍才变色。
+ *
+ * 按**名字**对齐：结果里的 `Entry` 是匹配那一刻从旧的 matcher 里带出来的实例，
+ * 和刚读出来的这份列表不是同一批对象，比引用永远不相等。
+ *
+ * 抽成顶层函数（而不是 [OcrStatus] 的私有逻辑）是为了能单测：它出错只会
+ * **静默不变色**，不报错也不崩溃。
+ */
+internal fun remapEntryMarks(matches: List<LineMatch>, entries: List<Entry>): List<LineMatch> {
+    if (entries.isEmpty()) return matches
+    val byName = entries.associateBy { it.name }
+    return matches.map { match ->
+        val fresh = match.entry?.let { byName[it.name] } ?: return@map match
+        if (fresh == match.entry) match else match.copy(entry = fresh)
+    }
+}
+
+/** [remapEntryMarks] 的状态版：识别中的缓存结果也要一起刷。 */
+internal fun OcrStatus.withEntryMarks(entries: List<Entry>): OcrStatus = when (this) {
+    is OcrStatus.Recognized -> copy(matches = remapEntryMarks(matches, entries))
+    is OcrStatus.Recognizing -> cached?.let { copy(cached = remapEntryMarks(it, entries)) } ?: this
+    else -> this
+}
+
+/**
  * 给一帧算一个便宜的“像素指纹”，用来判断画面有没有变。
  * 全图取 32x32 缩略图后采样，开销可以忽略。
  */

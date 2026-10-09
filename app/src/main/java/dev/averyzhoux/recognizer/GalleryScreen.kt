@@ -90,7 +90,9 @@ internal fun GalleryScreen(
                 )
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
-                    text = "相册 ${items.size} 张",
+                    // 叫「快照」而不是「相册」：这里是**拍摄当时**的记录，
+                    // 不会跟着数据集后来的标记变化（见 GalleryStore 里的 marked 快照）。
+                    text = "快照 ${items.size} 张",
                     color = Color.White.copy(alpha = 0.7f),
                     style = MaterialTheme.typography.bodyMedium
                 )
