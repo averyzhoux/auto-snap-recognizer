@@ -135,20 +135,53 @@
   .ph-modes {
     display: flex; gap: 2px; padding: 2px 4px 4px;
     font-size: 8px; color: rgba(255,255,255,.55);
+    /* ★ 必须 position: relative。.phone::before 是 inset:0 的绝对定位「取景画面」，
+       它绘制在所有**没有定位**的兄弟子元素之上——这一行当初就是因此整行看不见的
+       （元素在、高度也在，只是被盖住了）。
+       ph-row / ph-panel / ph-bar / ph-ver 都写着 position: relative 正是同一个原因，
+       往 .phone 里加新的一行时，别忘了也给它加上。
+       flex: none 是另一件事：防止手机高度（aspect-ratio 定死）不够时被压扁。 */
+    position: relative;
+    flex: none;
   }
   .ph-modes span { flex: 1; text-align: center; }
   .ph-modes span.on { color: var(--accent); }
+  /* 选中模式标签下的「条件暂停」提示点：和 App 里一样——勾了几个颜色就点几个点。
+     示意里那三个点和实际色值一致，颜色本身就是图例。 */
+  .ph-dots {
+    display: block; height: 3px; margin-top: 2px;
+    font-size: 0;              /* ★ 去掉 inline-block 之间的空白间隙，点距只由 margin 定 */
+  }
+  .ph-dots i {
+    display: inline-block; width: 3px; height: 3px;
+    border-radius: 50%; margin: 0 1px; vertical-align: top;
+    background: currentColor;
+  }
+  .ph-dots i.g { color: #3ddc84; }
+  .ph-dots i.y { color: #ffc800; }
+  .ph-dots i.b { color: #4fc3f7; }
+  /* 「条件暂停」那张卡里的迷你演示。借用 .ph-dots 画点，但**不能直接用 .ph-modes**：
+     那个类是给手机示意图的深色屏幕配的（浅字、等分整宽），放到浅色卡片上会看不清、
+     而且会被 flex:1 撑得太散。所以这里自带深色底，并让几组示例按内容宽度排。 */
+  .ph-dot-demo {
+    display: flex; gap: 14px; margin-top: 10px; padding: 8px 10px;
+    background: #1a1a1e; border-radius: 8px;
+    font-size: 9px; color: rgba(255, 255, 255, .55);
+  }
+  .ph-dot-demo > span { text-align: center; }
   .ph-divider { height: 1px; background: rgba(255,255,255,.18); margin: 6px 0; }
   .ph-miss { color: rgba(255,255,255,.55); }
   .ph-bar {
     position: relative; display: flex; align-items: center; gap: 10px;
     padding: 4px 2px 2px;
+    flex: none;               /* 见 .ph-modes 那条注释：防止被 flex 压扁 */
   }
   .ph-ver {                 /* 底部居中的版本号：压在系统导航栏那条带里 */
     position: relative; text-align: center;
     font-size: 7px; line-height: 1; letter-spacing: .02em;
     color: rgba(255,255,255,.35);
     margin-top: -2px;
+    flex: none;
   }
   .ph-thumb {
     width: 26px; height: 26px; border-radius: 7px;
@@ -182,9 +215,16 @@
     background: var(--surface); border: 1px solid var(--line);
     border-radius: var(--radius); padding: 18px;
   }
-  .card h4 { margin: 0 0 6px; font-size: 15px; }
-  .card p { margin: 0; color: var(--dim); font-size: 13.5px; line-height: 1.6; }
-  .card .ic { font-size: 20px; margin-bottom: 8px; display: block; }
+  /* 图标和标题排在同一行。★ .ic 原来是 display:block（独占一行），h4 改成 inline 后
+     两者才会并排；随之 h4 的垂直 margin 就失效了（对 inline 元素无效果），
+     所以标题与正文之间的间距改由 .card p 的 margin-top 提供。 */
+  .card h4 { margin: 0; font-size: 15px; display: inline; }
+  .card p { margin: 8px 0 0; color: var(--dim); font-size: 13.5px; line-height: 1.6; }
+  .card .ic {
+    font-size: 20px; margin-right: 4px; display: inline-block;
+    /* 20px 的 emoji 和 15px 的中文标题放一起，靠 middle 对齐会偏低，用像素值微调 */
+    vertical-align: -3px;
+  }
 
   pre {
     background: var(--surface); border: 1px solid var(--line);
@@ -312,14 +352,14 @@
         <div class="ph-miss">· Caps Lock</div>
       </div>
       <div class="ph-modes">
-        <span>标准</span><span>省内存</span><span>降采样</span><span class="on">小型图</span><span>流式</span>
+        <span>基础</span><span>省内存</span><span>降采样</span><span class="on">小型图<span class="ph-dots"><i class="g"></i><i class="y"></i><i class="b"></i></span></span><span>流式</span>
       </div>
       <div class="ph-bar">
         <span class="ph-thumb"></span>
         <span class="ph-shutter"><i></i></span>
         <span class="ph-mode">手动</span>
       </div>
-      <div class="ph-ver">Recognizer1 v0.1.0dev2</div>
+      <div class="ph-ver">Recognizer304 v0.3.4</div>
     </div>
   </div>
 </div>
@@ -331,42 +371,63 @@
     <div class="card">
       <span class="ic">📷</span>
       <h4>整屏取景</h4>
-      <p>CameraX 驱动，底部控制栏参照相机 App 设计，竖屏锁定。</p>
+      <p>CameraX 驱动，底部控制栏参照相机 App，竖屏锁定。</p>
     </div>
     <div class="card">
       <span class="ic">⏱️</span>
       <h4>手动 / 自动</h4>
-      <p>默认手动点按快门；切到自动则每秒抓一帧，适合流水线式扫一堆标签。</p>
+      <p>默认手动点按快门；自动模式每秒抓一帧。</p>
     </div>
     <div class="card">
       <span class="ic">⚡</span>
       <h4>五种识别管线</h4>
-      <p>底部一排可选：基础 / 省内存 / 降采样 / 小型图 / 流式，按设备性能和认字精度自己取舍。流式由相机连续推帧，识别完立刻处理下一帧，不用再手动点。</p>
+      <p>基础 / 省内存 / 降采样 / 小型图 / 流式，按性能和精度取舍。</p>
     </div>
     <div class="card">
       <span class="ic">🔍</span>
       <h4>离线 OCR</h4>
-      <p>Google ML Kit 拉丁文模型随包分发，不联网也能识别英文和数字。</p>
+      <p>ML Kit 拉丁文模型随包分发，不联网也能识别。</p>
     </div>
     <div class="card">
       <span class="ic">🎯</span>
       <h4>聪明的比对</h4>
-      <p>精确 → 包含 → 模糊三层策略，容忍 OCR 常见的字母错认。</p>
+      <p>精确 → 包含 → 模糊三层策略，容忍字母错认。</p>
     </div>
     <div class="card">
       <span class="ic">🗂️</span>
       <h4>内部相册</h4>
-      <p>拍摄自动存档（预览图 + 识别结果），可回看、可点开看逐行结果。连续扫描时按 3 秒节流，不会把相册撑爆。</p>
+      <p>拍摄自动存档，可回看逐行结果；连续扫描按 3 秒节流。</p>
     </div>
     <div class="card">
       <span class="ic">🔵</span>
       <h4>标记「已识别」</h4>
-      <p>数据集编辑页里可以逐项打勾，标记过的项在识别结果里显示成蓝色——扫货时当台账用，核对过的一条条勾掉，一眼看出哪些处理过了。</p>
+      <p>逐项打勾，标记过的项显示蓝色，当台账用。</p>
+    </div>
+    <div class="card" id="feature-pause">
+      <span class="ic">🟢</span>
+      <h4>条件暂停</h4>
+      <p>勾选命中颜色，一出现就自动停下；每种模式各设各的。</p>
+      <!-- <div class="ph-dot-demo">
+        <span>三种都勾<span class="ph-dots"><i class="g"></i><i class="y"></i><i class="b"></i></span></span>
+        <span>只勾绿<span class="ph-dots"><i class="g"></i></span></span>
+        <span>全不勾<span class="ph-dots"></span></span>
+      </div>
+      <p class="muted tiny" style="margin:8px 0 0">标签下方的点，就是这条模式勾了哪几个颜色。</p> -->
+    </div>
+    <div class="card">
+      <span class="ic">⚙️</span>
+      <h4>设置会记住</h4>
+      <p>面板参数与条件暂停颜色自动保存，重启后仍在。</p>
+    </div>
+    <div class="card">
+      <span class="ic">🔦</span>
+      <h4>取景页手电筒</h4>
+      <p>左上角开关补光，状态跟随相机，不会灯灭图标还亮。</p>
     </div>
     <div class="card">
       <span class="ic">📋</span>
       <h4>多个数据集</h4>
-      <p>表格可导入多份、随时切换，跨重启保留。右上角随时看到当前用的是哪份。</p>
+      <p>可导入多份、随时切换，跨重启保留。</p>
     </div>
   </div>
 </section>
@@ -537,6 +598,7 @@ Production Date</code></pre>
         <tr><td><code>DatasetParser.kt</code></td><td>表格解析 + 编码探测（纯函数，可单测）</td></tr>
         <tr><td><code>DatasetStore.kt</code></td><td>数据集的落盘 / 列表 / 删除 / 激活</td></tr>
         <tr><td><code>GalleryStore.kt</code></td><td>相册的落盘 / 读取 / 淘汰</td></tr>
+        <tr><td><code>PipelineSettingsStore.kt</code></td><td>管线设置与「条件暂停」颜色的落盘（SharedPreferences）</td></tr>
       </tbody>
     </table>
   </div>

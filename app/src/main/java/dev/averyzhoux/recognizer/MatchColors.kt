@@ -32,3 +32,52 @@ internal fun matchColor(match: LineMatch): Color? = when {
     match.isStrong -> MatchGreen
     else -> XiaomiYellow
 }
+
+/**
+ * 结果面板上一条命中**显示成什么颜色**。
+ *
+ * 专门用来做「条件暂停」的判据：命中某种颜色就停下来。
+ *
+ * ★ 判据是**显示颜色**，不是 [MatchKind]。两者在「已手动标记」这项上会分叉：
+ *   一个已标记的精确命中显示蓝色（见 [matchColor] 的优先级），
+ *   所以它属于 [Blue]，不属于 [Green]。用户勾「绿」时它不会触发——
+ *   这看起来像漏判，其实是刻意的：面板上它就是蓝的，按看到的颜色说话。
+ */
+internal enum class HitColor(
+    /** 面板上那个色块下面用的单字（只在无障碍描述里还会用到） */
+    val label: String,
+    val color: Color,
+    /** 面板右侧那句图例，写成「绿 = 精确」这种一律对齐的三段式 */
+    val explain: String
+) {
+    /** 完全相同 / 包含命中，且没被手动标记过 */
+    Green("绿", MatchGreen, "绿 = 精确"),
+
+    /** 模糊命中（相似度高但不等），且没被手动标记过。最容易误触发，见面板注释 */
+    Yellow("黄", XiaomiYellow, "黄 = 模糊"),
+
+    /** 该表格项已被手动标记「已识别」，优先级最高，压过绿黄 */
+    Blue("蓝", MatchBlue, "蓝 = 已标记")
+}
+
+/** 这条命中显示成哪种颜色；没命中给 null。和 [matchColor] 的判断顺序必须一致。 */
+internal fun hitColorOf(match: LineMatch): HitColor? = when {
+    !match.isHit -> null
+    match.entry?.marked == true -> HitColor.Blue
+    match.isStrong -> HitColor.Green
+    else -> HitColor.Yellow
+}
+
+/**
+ * 色块上那个对勾该用黑还是白。
+ *
+ * 黄、绿都偏亮，白勾糊在底色里看不清，得用黑勾；蓝偏暗，用白勾。
+ *
+ * 刻意**不**去算 `Color.luminance()`：那个 API 目前挂着 `@ExperimentalGraphicsApi`，
+ * 为三种写死的颜色引入一个实验性依赖不划算。颜色就三个，改了色值顺手核对这里即可。
+ */
+internal val HitColor.checkMarkColor: Color
+    get() = when (this) {
+        HitColor.Green, HitColor.Yellow -> Color.Black
+        HitColor.Blue -> Color.White
+    }

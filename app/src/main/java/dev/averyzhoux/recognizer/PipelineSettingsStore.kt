@@ -56,7 +56,8 @@ internal class PipelineSettingsStore(context: Context) {
         downscaleLongEdge = prefs.getInt(KEY_DOWNSCALE_LONG_EDGE, Pipeline.DOWNSCALE_LONG_EDGE),
         captureIntervalMs = prefs.getLong(KEY_CAPTURE_INTERVAL_MS, AUTO_CAPTURE_INTERVAL_MS),
         gallerySaveIntervalMs = prefs.getLong(KEY_GALLERY_SAVE_INTERVAL_MS, GALLERY_SAVE_INTERVAL_MS),
-        saveHitsOnly = prefs.getBoolean(KEY_SAVE_HITS_ONLY, false)
+        saveHitsOnly = prefs.getBoolean(KEY_SAVE_HITS_ONLY, false),
+        autoPauseColors = Pipeline.entries.associateWith { readAutoPauseColors(it) }
     )
 
     // ---------- 写 ----------
@@ -71,18 +72,43 @@ internal class PipelineSettingsStore(context: Context) {
      */
     fun save(settings: PipelineSettings) {
         io.execute {
-            val ok = prefs.edit()
+            val editor = prefs.edit()
                 .putLong(KEY_ANALYSIS_INTERVAL_MS, settings.analysisIntervalMs)
                 .putInt(KEY_DOWNSCALE_LONG_EDGE, settings.downscaleLongEdge)
                 .putLong(KEY_CAPTURE_INTERVAL_MS, settings.captureIntervalMs)
                 .putLong(KEY_GALLERY_SAVE_INTERVAL_MS, settings.gallerySaveIntervalMs)
                 .putBoolean(KEY_SAVE_HITS_ONLY, settings.saveHitsOnly)
-                .commit()
+
+            // 条件暂停的颜色：**每条管线一个 key**，和抓帧间隔一样各存各的
+            for (pipeline in Pipeline.entries) {
+                editor.putStringSet(
+                    autoPauseColorsKey(pipeline),
+                    settings.autoPauseColors[pipeline].orEmpty().map { it.name }.toSet()
+                )
+            }
+
+            val ok = editor.commit()
             // 写失败只可能是磁盘满之类的极端情况：值在内存里已经生效，
             // 下次启动会回默认值，不拦着用户继续用，留个日志够查了。
             if (!ok) Log.w(TAG, "管线设置落盘失败，本次修改重启后会丢")
         }
     }
+
+    /**
+     * 读某条管线的条件暂停颜色；空集 = 这条管线没开这个功能。
+     *
+     * ★ `getStringSet` 拿到的是**内部集合的引用**，直接塞进 [PipelineSettings] 的话，
+     *   谁改一下就会污染 SharedPreferences 自己的缓存。所以这里 map 成新集合。
+     * ★ 认不出来的名字直接丢掉，而不是 `HitColor.valueOf` 硬转：以后删掉某个颜色时，
+     *   旧版本写下的名字还在磁盘上，硬转会直接崩在启动路径上。
+     */
+    private fun readAutoPauseColors(pipeline: Pipeline): Set<HitColor> =
+        prefs.getStringSet(autoPauseColorsKey(pipeline), emptySet())
+            .orEmpty()
+            .mapNotNull { name -> HitColor.entries.firstOrNull { it.name == name } }
+            .toSet()
+
+    private fun autoPauseColorsKey(pipeline: Pipeline) = "$KEY_AUTO_PAUSE_COLORS.${pipeline.name}"
 
     private companion object {
         const val TAG = "PipelineSettingsStore"
@@ -94,5 +120,8 @@ internal class PipelineSettingsStore(context: Context) {
         const val KEY_CAPTURE_INTERVAL_MS = "capture_interval_ms"
         const val KEY_GALLERY_SAVE_INTERVAL_MS = "gallery_save_interval_ms"
         const val KEY_SAVE_HITS_ONLY = "save_hits_only"
+
+        /** 前缀；实际 key 是 `auto_pause_colors.<Pipeline 枚举名>` */
+        const val KEY_AUTO_PAUSE_COLORS = "auto_pause_colors"
     }
 }

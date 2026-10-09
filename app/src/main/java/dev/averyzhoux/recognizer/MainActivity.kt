@@ -364,6 +364,20 @@ fun CameraOcrScreen() {
     // 进流式时默认就是暂停——先让人有机会调设置，再点「继续」开跑。
     var analysisPaused by remember { mutableStateOf(false) }
 
+    // ---------- 「命中某颜色就自动停」的两个状态 ----------
+    //
+    // ★ lastHitColor 是**边沿触发**用的：只有「上一帧没命中色 → 这一帧有」才停一次。
+    //   不做边沿的话，停下之后画面里那个绿色还在，用户一点「继续」就立刻又被停住，
+    //   等于永远恢复不了。
+    // ★ 按用户要求**不做「离开一段时间才算新一次」的宽限**：恢复后命中色仍在画面里
+    //   就不再触发，想再停一次得先把它移开（移开后 lastHitColor 变 null，又能触发）。
+    var lastHitColor by remember { mutableStateOf<HitColor?>(null) }
+
+    // ★ 这次暂停是不是「因为命中」自动停的。单独记一个，是因为 autoMode=false
+    //   和「暂停」在界面上是同一个样子：用户自己按掉的自动模式不能显示绿色提示环。
+    //   绿色环的判据是 `暂停中 && pausedByHit`。
+    var pausedByHit by remember { mutableStateOf(false) }
+
     // 各条管线的可调参数（分析间隔 / 降采样长边 / 相册保存间隔 / 只存命中的帧）。
     // 从磁盘读回来，所以上次调好的值重启后还在；读不到就走数据类里的默认值。
     val settingsStore = remember { PipelineSettingsStore(context.applicationContext) }
@@ -372,6 +386,23 @@ fun CameraOcrScreen() {
     var settingsOpen by remember { mutableStateOf(false) }
     // 上一次真正处理帧的时刻，用来实现「分析间隔」限速
     val lastAnalysisAt = remember { AtomicLong(0L) }
+
+    /**
+     * 离开取景页时，把「条件暂停」留下的两个状态清掉。
+     *
+     * ★ `keepPreviousState` 这个中间变量是为了**区分「第一次进来」和「真的切屏」**：
+     *   不记上一值的话，首次组合也会当成一次切换，把状态白清一遍。
+     *
+     * 流式的 `analysisPaused` **不动**——它有自己的语义（用户明确按过「继续」才算跑），
+     * 清掉会让翻完相册回来就自己跑起来。这里只撤掉提示相关的两个值。
+     */
+    var keepPreviousState by remember { mutableStateOf(screen) }
+    LaunchedEffect(screen) {
+        if (screen == keepPreviousState) return@LaunchedEffect
+        keepPreviousState = screen
+        pausedByHit = false
+        lastHitColor = null
+    }
 
     /**
      * 是不是「相机一直在推帧」。
@@ -416,6 +447,39 @@ fun CameraOcrScreen() {
                 true
             }
         }
+    }
+
+    /**
+     * 条件暂停：命中指定颜色就停下来。
+     *
+     * 每条管线各有一组勾选的颜色（面板里那三个色块），空集就是没开这个功能。
+     * 连续运行时才会被调用——手动模式本来就不连续抓帧，没有「停」可言。
+     *
+     * ★ 判据走 [hitColorOf]，是**显示颜色**而不是 MatchKind：一个「已标记 + 精确命中」
+     *   的项在面板上是蓝的，勾了绿色就不会停它。看起来像漏判，其实是照看到的颜色说话。
+     *
+     * 这个函数在 ML Kit 的回调里被同步调用。和它上面那几行更新 `status` 的代码一样——
+     * 识别早就跑在后台线程上，这里只做赋值，不碰相机、不碰位图。
+     */
+    val maybeAutoPause: (List<LineMatch>) -> Unit = { result ->
+        val watched = pipelineSettings.autoPauseColors[pipeline].orEmpty()
+        // 当前这一帧里出现的颜色；取「最优先」的那个，用户勾了那个就停
+        val current = HitColor.entries.firstOrNull { it in watched && result.any { m -> hitColorOf(m) == it } }
+        // 空集 / 画面里没勾选的颜色 → 都归成 null，等价于「这次没有命中色」
+        if (current != null && lastHitColor == null) {
+            // 流式：相机还在推帧，停的是 analyzer 那边（靠 deliverFrames 丢帧）
+            if (pipeline.usesAnalysis) {
+                analysisPaused = true
+            } else {
+                // 其余四条：停掉自动抓帧循环。**不清 lastSignature / lastMatches**——
+                // 手动点「自动」关掉时会清缓存，但这里是自动停的，
+                // 结果面板上那行命中正被用户盯着看，清了会闪一下再重算。
+                autoMode = false
+            }
+            pausedByHit = true
+            Log.d(TAG, "条件暂停：命中${current.label}色（pipeline=${pipeline.label}）")
+        }
+        lastHitColor = current
     }
 
     /**
@@ -519,6 +583,7 @@ fun CameraOcrScreen() {
                     matches = result
                 )
             }
+            maybeAutoPause(result)
             ocrSource?.recycle()
             image.close()
             busy.set(false)
@@ -718,6 +783,10 @@ fun CameraOcrScreen() {
 
             PipelineModeRow(
                 current = pipeline,
+                // 当前这条管线勾了哪几个「条件暂停」颜色，就在它标签下方点几个点。
+                // 只传当前这条：圆点的作用是「一眼看出现在这条模式会因什么而停」，
+                // 不是给五条管线各列一份配置。
+                pauseColors = pipelineSettings.autoPauseColors[pipeline].orEmpty(),
                 onSelect = { picked ->
                     if (picked == pipeline) {
                         // ★ 再点一次已经选中的那条管线 = 展开它的设置面板
@@ -731,6 +800,9 @@ fun CameraOcrScreen() {
                         // 进流式**默认暂停**：先让人有机会调设置，再点「继续」开跑。
                         // 换成别的管线时这个值不影响它们（deliverFrames 只管 ImageAnalysis）。
                         analysisPaused = picked.usesAnalysis
+                        // 换管线 = 换一组「条件暂停」设置，上一组的状态全部作废
+                        pausedByHit = false
+                        lastHitColor = null
                         settingsOpen = false
                     }
                 }
@@ -782,7 +854,8 @@ fun CameraOcrScreen() {
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                // 右下角圆钮：普通管线切自动/手动，流式切暂停/继续
+                // 右下角圆钮：普通管线切自动/手动，流式切暂停/继续。
+                // 被「条件暂停」停掉时，这个钮改成绿色提示一下（见 highlight）。
                 ModeSwitch(
                     label = if (pipeline.usesAnalysis) {
                         // 显示的是一直在跑时该按的动作：跑着显示「暂停」，停了显示「继续」
@@ -791,6 +864,9 @@ fun CameraOcrScreen() {
                         if (autoMode) "自动" else "手动"
                     },
                     active = if (pipeline.usesAnalysis) !analysisPaused else autoMode,
+                    // ★ 只有「因为命中而停」才亮绿：用户自己按掉的自动模式不亮，
+                    //   否则两条来路分不出来，提示就失去意义了
+                    highlight = pausedByHit,
                     onClick = {
                         if (pipeline.usesAnalysis) {
                             // 只翻转这一个开关：analyzer 那边靠 deliverFrames 丢掉帧
@@ -801,6 +877,10 @@ fun CameraOcrScreen() {
                             lastSignature = null
                             lastMatches = null
                         }
+                        // 人一动手，绿色提示就撤掉。★ lastHitColor **故意不在这里清**：
+                        // 用户点「继续」时命中色多半还在画面里，不清才不会立刻又被停一次；
+                        // 等它移开，lastHitColor 自己会变成 null，又能触发下一次。
+                        pausedByHit = false
                     }
                 )
             }

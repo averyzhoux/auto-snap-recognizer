@@ -48,14 +48,25 @@ internal val THUMBNAIL_SLOT = 56.dp
  * - 流式 → 切换**暂停 / 继续**（相机一直在推帧，需要一个停下来的开关）
  *
  * 选中态用小米相机的黄色 + 一圈黄色描边表示。
+ *
+ * [highlight] 是给「条件暂停」用的：自动停掉时换成**绿色**环和绿字，
+ * 让用户知道「这次是自己停的，不是我按的」。它和 [active] 是两个维度——
+ * `active` 说的是「这个功能开着没」，`highlight` 说的是「为什么停的」，
+ * 所以用户手动关掉自动模式时只该亮黄、不该亮绿。
  */
 @Composable
 internal fun ModeSwitch(
     label: String,
     active: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    highlight: Boolean = false
 ) {
+    val accent = when {
+        active -> XiaomiYellow
+        highlight -> MatchGreen
+        else -> Color.White.copy(alpha = 0.6f)
+    }
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
@@ -64,14 +75,14 @@ internal fun ModeSwitch(
             .background(Color.Black.copy(alpha = 0.45f))
             .border(
                 width = 1.5.dp,
-                color = if (active) XiaomiYellow else Color.White.copy(alpha = 0.6f),
+                color = accent,
                 shape = CircleShape
             )
             .clickable(onClick = onClick)
     ) {
         Text(
             text = label,
-            color = if (active) XiaomiYellow else Color.White,
+            color = if (active || highlight) accent else Color.White,
             style = MaterialTheme.typography.labelLarge
         )
     }
@@ -140,10 +151,15 @@ internal fun ShutterButton(
  * 任意一项被选中时，标签**正上方**会多一个自绘的上拉箭头：再点一次这一项会从底部
  * 展开这条管线的设置（分析间隔等），箭头是给这个隐藏操作的提示。
  * 箭头是画出来的，不是字符 `⌃`——字体里有没有那个字形完全没法保证。
+ *
+ * [pauseColors] 是**当前这条管线**已勾选的「条件暂停」颜色，渲染成标签**正下方**
+ * 的一排小圆点（0~3 个）。和箭头一样是居中排列：不管几个点，整体都在标签正中，
+ * 不会左对齐或右对齐。
  */
 @Composable
 internal fun PipelineModeRow(
     current: Pipeline,
+    pauseColors: Set<HitColor>,
     onSelect: (Pipeline) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -184,7 +200,61 @@ internal fun PipelineModeRow(
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1
                 )
+                // ★ 和上面那个箭头槽同理：每一项都留出同样高的槽，只有被选中的
+                //   那条往里放圆点。不为没选中的项留槽的话，选中项会多出一截，
+                //   5 个标签的文字就不在同一水平线上了。
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.height(PAUSE_DOTS_SLOT)
+                ) {
+                    if (selected) {
+                        PauseColorDots(colors = pauseColors)
+                    }
+                }
             }
+        }
+    }
+}
+
+/** 圆点槽的高度：给「条件暂停」的提示点留的位置，所有模式项都留同样的高 */
+private val PAUSE_DOTS_SLOT = 7.dp
+
+/** 一个提示点的直径 */
+private val DOT_SIZE = 4.dp
+
+/** 相邻两个提示点的间距 */
+private val DOT_SPACING = 4.dp
+
+/**
+ * 标签下方那排提示点：这条管线勾了哪几个「条件暂停」颜色就画几个。
+ *
+ * 用 `Canvas` 一次画完而不是摆一排 `Box`：点的数量是变的（0~3），
+ * 画的话只要算好间距和居中偏移，不用去凑 Row 的宽度，也不会因为
+ * 每项宽度不同而让整排左右跳。
+ *
+ * ★ 不勾任何颜色时**画布依然占着 [PAUSE_DOTS_SLOT] 的位置**，只是什么都不画。
+ *   高度不参与布局的话，勾选与不勾选之间整行会上下跳一下。
+ */
+@Composable
+private fun PauseColorDots(colors: Set<HitColor>, modifier: Modifier = Modifier) {
+    // 按枚举声明顺序排，位置稳定；Set 的迭代顺序不保证，直接用会跳
+    val ordered = HitColor.entries.filter { it in colors }
+    if (ordered.isEmpty()) return
+
+    Canvas(
+        modifier = modifier.size(
+            width = DOT_SIZE * ordered.size + DOT_SPACING * (ordered.size - 1),
+            height = DOT_SIZE
+        )
+    ) {
+        val radius = size.height / 2f
+        val step = DOT_SIZE.toPx() + DOT_SPACING.toPx()
+        ordered.forEachIndexed { index, kind ->
+            drawCircle(
+                color = kind.color,
+                radius = radius,
+                center = Offset(radius + step * index, radius)
+            )
         }
     }
 }

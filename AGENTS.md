@@ -11,6 +11,7 @@ Kotlin / Compose / 纯本地存储 / 无网络。
 - **不要用 monkey 测试**（用户明确要求）：它在真机上乱点，设备私有目录里有真实
   数据集和相册，有误删风险。`adb shell input` 在 MIUI 上被挡，所以真机点选
   **只能等待人去手动点击**，不要试图绕过去自动化。
+- ai agent 创建的临时文件和临时目录如非必要，都从 temp 目录下去构建，而不是 tmp。
 
 ## 硬约束（改代码前必读）
 1. rotationDegrees 必须传给 ML Kit
@@ -38,3 +39,4 @@ Kotlin / Compose / 纯本地存储 / 无网络。
 ## 不要做
 - 不加网络、不加大型依赖
 - 不删 rotationDegrees / image.close() / bitmap.recycle()
+- **不要删除 `tmp/` 里的任何内容**（用户明确要求）：`tmp/` 被 `.gitignore` 忽略

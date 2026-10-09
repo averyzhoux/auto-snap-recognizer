@@ -1,5 +1,6 @@
 package dev.averyzhoux.recognizer
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -25,8 +27,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -71,7 +76,21 @@ internal data class PipelineSettings(
     val gallerySaveIntervalMs: Long = GALLERY_SAVE_INTERVAL_MS,
 
     /** 只把**有命中**的帧存进相册（没命中的一帧不留），用来压相册体积 */
-    val saveHitsOnly: Boolean = false
+    val saveHitsOnly: Boolean = false,
+
+    /**
+     * 各管线**各自**一组：**条件暂停**——命中这些颜色的项就自动停下来。
+     *
+     * 字段本身全局一份，但值是按 [Pipeline] 分开存的——和 [captureIntervalMs] 一样：
+     * 功能相同、设置互不影响。换条管线调它不会动到别人的值。
+     *
+     * 空集 = 这条管线不开这个功能（默认全空，要人主动去勾）。
+     *
+     * ★ 「暂停」在这条管线上的含义由 [Pipeline.usesAnalysis] 决定，不在这里：
+     *   流式把 `analysisPaused` 置 true，其余四条把 `autoMode` 置 false。
+     *   这里只回答「命中什么颜色要停」，不回答「怎么停」。
+     */
+    val autoPauseColors: Map<Pipeline, Set<HitColor>> = emptyMap()
 )
 
 /** 「流式 · 分析间隔」的可选项（毫秒 → 显示文字）。 */
@@ -222,6 +241,20 @@ internal fun PipelineSettingsSheet(
                     )
                 }
             }
+
+            // ---------- 条件暂停：命中指定颜色就停（5 条管线都有，各自独立）----------
+            //
+            // 刻意做成**一行**而不是 SettingSection：面板已经有 4 节，多一节要多占
+            // 近 90dp，小屏上就要滚了。这里把说明压成一行小字，右侧直接放三个色块，
+            // 整块只占约 58dp。
+            AutoPauseColorRow(
+                selected = settings.autoPauseColors[pipeline].orEmpty(),
+                onToggle = { color ->
+                    val next = settings.autoPauseColors[pipeline].orEmpty()
+                        .let { if (color in it) it - color else it + color }
+                    onChange(settings.copy(autoPauseColors = settings.autoPauseColors + (pipeline to next)))
+                }
+            )
 
             // ---------- 管线自己的那些设置 ----------
             when (pipeline) {
@@ -439,5 +472,154 @@ private fun <T> OptionChips(
                     .padding(horizontal = 14.dp, vertical = 7.dp)
             )
         }
+    }
+}
+
+/**
+ * 「条件暂停」那一行：左边标题 + 说明，右边三个可多选的色块 + 各自的名字。
+ *
+ * 勾中的颜色一旦在画面里出现，就自动停下来（流式 = 暂停，其余 = 转手动）。
+ * **空集 = 不开这个功能**，所以默认全不勾，不另设开关。
+ *
+ * ★ 说明文字里那句「设置互不影响」是刻意的：值按管线分开存，
+ *   用户在流式里勾了什么，换到降采样看到的还是原样。
+ */
+@Composable
+private fun AutoPauseColorRow(
+    selected: Set<HitColor>,
+    onToggle: (HitColor) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp)
+    ) {
+        // 三行：标题 → 说明 → 选项。说明单独占一行、不跟标题挤在同一行，
+        // 是因为它比标题长得多；并排时右边那截要么换行、要么把色块推出去。
+        Text(
+            text = "条件暂停",
+            color = Color.White,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Text(
+            text = "命中即停，每条模式各自设置",
+            color = Color.White.copy(alpha = 0.45f),
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+
+        // 选项行：三个色块，右侧跟一句图例。图例写全「绿 = 精确 / 黄 = 模糊 /
+        // 蓝 = 已标记」，因为光看色环只认得出颜色、认不出它对应什么命中。
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(top = 10.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                HitColor.entries.forEach { kind ->
+                    HitColorChip(
+                        kind = kind,
+                        on = kind in selected,
+                        onClick = { onToggle(kind) }
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                HitColor.entries.forEach { kind ->
+                    Text(
+                        text = kind.explain,
+                        color = kind.color.copy(alpha = 0.85f),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 一个可勾选的色块。
+ *
+ * 两种状态：**都带对应颜色的环**，区别只在里面填没填。
+ * - 选中：整块填该颜色 + 对勾（勾的黑白由 [HitColor.checkMarkColor] 决定）
+ * - 未选中：只有一圈该颜色的环，中间是空的
+ *
+ * ★ 环的颜色**不是白色**：三个白圈看上去一模一样，得靠下面的文字才知道哪个是哪个；
+ *   用各自的颜色，色环本身就是图例。
+ * ★ 触摸区 [CHIP_TOUCH_SIZE] 比色块 [CHIP_DOT_SIZE] 大一圈：色块本身太小，
+ *   按 18dp 算命中区的话很难点中。多出来的部分靠 `contentAlignment` 居中，
+ *   视觉位置不受影响。
+ */
+@Composable
+private fun HitColorChip(kind: HitColor, on: Boolean, onClick: () -> Unit) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(CHIP_TOUCH_SIZE)
+            .clip(CircleShape)
+            .clickable(
+                onClick = onClick,
+                onClickLabel = if (on) "取消${kind.label}色" else "勾选${kind.label}色"
+            )
+    ) {
+        Canvas(modifier = Modifier.size(CHIP_DOT_SIZE)) {
+            val radius = size.minDimension / 2f
+            val stroke = CHIP_RING_WIDTH.toPx()
+            if (on) {
+                drawCircle(color = kind.color, radius = radius)
+            } else {
+                // 描边压在圆的内侧，不然会被 size() 的边界裁掉半个像素
+                drawCircle(
+                    color = kind.color.copy(alpha = 0.75f),
+                    radius = radius - stroke / 2f,
+                    style = Stroke(width = stroke)
+                )
+            }
+        }
+        if (on) {
+            // 对勾画在 Canvas 外面、用同一个尺寸的叠层，这样不用在 drawScope 里
+            // 手算路径——两个 Box 都是 CHIP_DOT_SIZE 且居中，坐标天然对齐
+            CheckMark(color = kind.checkMarkColor)
+        }
+    }
+}
+
+/** 色块直径 */
+private val CHIP_DOT_SIZE = 18.dp
+
+/**
+ * 色块触摸区直径。
+ *
+ * ★ 这个值同时决定**色块的视觉位置**：圆只有 18dp，靠 `contentAlignment` 坐在
+ *   这个方盒子的正中，所以盒子比圆大多少，圆的行内重心就被压低多少。
+ *   取 32dp 的话圆心比右侧图例文字低约 5dp，一眼就看得出歪；收到 26dp 后只差约 2dp。
+ *   再往下（24dp）视觉更准，但那已经小于舒适点击区了——宁可留 2dp 的偏差。
+ */
+private val CHIP_TOUCH_SIZE = 26.dp
+
+/** 未选中时那圈彩色环的宽度 */
+private val CHIP_RING_WIDTH = 1.5.dp
+
+/** 一个「✓」，自绘。用画的而不是打 `✓`：字体里有没有这个字形没法保证。 */
+@Composable
+private fun CheckMark(color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier.size(CHIP_DOT_SIZE)) {
+        val w = size.width
+        val h = size.height
+        val stroke = 1.8.dp.toPx()
+        drawLine(
+            color = color,
+            start = Offset(w * 0.28f, h * 0.52f),
+            end = Offset(w * 0.44f, h * 0.68f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = color,
+            start = Offset(w * 0.44f, h * 0.68f),
+            end = Offset(w * 0.72f, h * 0.34f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Round
+        )
     }
 }
