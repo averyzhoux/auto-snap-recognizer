@@ -1,5 +1,7 @@
 # AGENTS.md
 
+需加载 role.md 避免拟人化。
+
 ## 项目
 Android 相机 OCR（CameraX + ML Kit 拉丁文 + 本地表格比对 + 应用内相册）。
 Kotlin / Compose / 纯本地存储 / 无网络。

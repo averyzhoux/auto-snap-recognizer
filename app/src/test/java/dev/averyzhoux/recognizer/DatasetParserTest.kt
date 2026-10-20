@@ -1,6 +1,7 @@
 package dev.averyzhoux.recognizer
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -82,6 +83,155 @@ class DatasetParserTest {
         val result = DatasetParser.parse("Manufacturer,,Mfg,")
 
         assertEquals("Manufacturer", result.entries[0].name)
+        assertEquals(listOf("Mfg"), result.entries[0].aliases)
+    }
+
+    // ---------- 引号内的分隔符（导出往返依赖它） ----------
+
+    @Test
+    fun `引号里的逗号不切字段`() {
+        val result = DatasetParser.parse("\"A,B\",\"C\"")
+
+        assertEquals(1, result.entries.size)
+        assertEquals("A,B", result.entries[0].name)
+        assertEquals(listOf("C"), result.entries[0].aliases)
+    }
+
+    @Test
+    fun `引号里的制表符和分号不切字段`() {
+        val tab = DatasetParser.parse("\"Mo\tdel\"")
+        assertEquals("Mo\tdel", tab.entries[0].name)
+
+        val semicolon = DatasetParser.parse("\"M;odel\"")
+        assertEquals("M;odel", semicolon.entries[0].name)
+    }
+
+    @Test
+    fun `引号内的空格被保留`() {
+        val result = DatasetParser.parse("\"Serial  Number\"")
+        assertEquals("Serial  Number", result.entries[0].name)
+    }
+
+    @Test
+    fun `不加引号的行行为不变`() {
+        // 没有引号时新解析必须和旧的 split 逐字一致
+        val result = DatasetParser.parse("Manufacturer, Mfg, Maker")
+
+        assertEquals("Manufacturer", result.entries[0].name)
+        assertEquals(listOf("Mfg", "Maker"), result.entries[0].aliases)
+    }
+
+    @Test
+    fun `行首的裸引号不会被当成引用开始`() {
+        // 名称中间才出现引号（`5" Drive`）时，引号不是字段开头，不进入引用状态
+        val result = DatasetParser.parse("""5" Drive,Bay""")
+
+        assertEquals("""5" Drive""", result.entries[0].name)
+        assertEquals(listOf("Bay"), result.entries[0].aliases)
+    }
+
+    // ---------- 标记列 ----------
+
+    @Test
+    fun `行末对勾解析为已标记`() {
+        val result = DatasetParser.parse("Model,✓")
+
+        assertEquals("Model", result.entries[0].name)
+        assertTrue(result.entries[0].aliases.isEmpty())
+        assertTrue(result.entries[0].marked)
+    }
+
+    @Test
+    fun `标记在前的格式`() {
+        val result = DatasetParser.parse(
+            """
+            标记,词条,别名1,别名2
+            ✓,Manufacturer,Mfg,Maker
+            ,Model,Model No
+            ,Warranty
+            """.trimIndent()
+        )
+
+        assertEquals(3, result.entries.size)
+
+        assertEquals("Manufacturer", result.entries[0].name)
+        assertEquals(listOf("Mfg", "Maker"), result.entries[0].aliases)
+        assertTrue(result.entries[0].marked)
+
+        assertEquals("Model", result.entries[1].name)
+        assertEquals(listOf("Model No"), result.entries[1].aliases)
+        assertFalse(result.entries[1].marked)
+
+        assertTrue(result.entries[2].aliases.isEmpty())
+    }
+
+    @Test
+    fun `两列表头被跳过`() {
+        val result = DatasetParser.parse(
+            """
+            词条,标记
+            Model,✓
+            Manufacturer,
+            """.trimIndent()
+        )
+
+        assertEquals(2, result.entries.size)
+        assertEquals("Model", result.entries[0].name)
+        assertEquals("Manufacturer", result.entries[1].name)
+        assertFalse(result.entries[1].marked)
+    }
+
+    @Test
+    fun `行末 marked=true 解析为已标记`() {
+        val result = DatasetParser.parse("Model,Mfg,marked=true")
+
+        assertEquals("Model", result.entries[0].name)
+        assertEquals(listOf("Mfg"), result.entries[0].aliases)
+        assertTrue(result.entries[0].marked)
+    }
+
+    @Test
+    fun `行末 marked=false 解析为未标记`() {
+        val result = DatasetParser.parse("Model,marked=false")
+
+        assertFalse(result.entries[0].marked)
+        assertTrue(result.entries[0].aliases.isEmpty())
+    }
+
+    @Test
+    fun `没有标记列的旧文件视为未标记`() {
+        val result = DatasetParser.parse("Model,Mfg")
+
+        assertFalse(result.entries[0].marked)
+        assertEquals(listOf("Mfg"), result.entries[0].aliases)
+    }
+
+    @Test
+    fun `标记值大小写不敏感`() {
+        assertTrue(DatasetParser.parse("Model,MARKED=TRUE").entries[0].marked)
+        assertFalse(DatasetParser.parse("Model,marked=False").entries[0].marked)
+    }
+
+    @Test
+    fun `无法识别的标记值原样保留为别名`() {
+        // 宁可多一个别名，也不要把用户真实数据吃掉
+        val result = DatasetParser.parse("Model,marked=yes")
+
+        assertFalse(result.entries[0].marked)
+        assertEquals(listOf("marked=yes"), result.entries[0].aliases)
+    }
+
+    @Test
+    fun `同名多行时标记取或`() {
+        val result = DatasetParser.parse(
+            """
+            Model,marked=false
+            Model,Mfg,marked=true
+            """.trimIndent()
+        )
+
+        assertEquals(1, result.entries.size)
+        assertTrue(result.entries[0].marked)
         assertEquals(listOf("Mfg"), result.entries[0].aliases)
     }
 

@@ -89,6 +89,7 @@ internal fun DatasetRow(
     active: Boolean,
     onSelect: () -> Unit,
     onEdit: () -> Unit,
+    onExport: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -148,8 +149,13 @@ internal fun DatasetRow(
             }
 
             // 内置的那份「示例数据集」条目写死在代码里，所以只能进去改标记、不能删。
-            // 编辑按钮两边都有，删除只给导入的。
+            // 编辑 / 导出两边都有（内置的也能导出成 CSV 带走），删除只给导入的。
             RowAction(text = "编辑", color = XiaomiYellow, onClick = onEdit)
+            RowAction(
+                text = "导出",
+                color = Color.White.copy(alpha = 0.75f),
+                onClick = onExport
+            )
             if (!meta.builtIn) {
                 RowAction(
                     text = "删除",
@@ -184,6 +190,7 @@ internal fun DatasetScreen(
     onBack: () -> Unit,
     onSelect: (DatasetMeta) -> Unit,
     onEdit: (DatasetMeta) -> Unit,
+    onExport: (DatasetMeta) -> Unit,
     onDelete: (DatasetMeta) -> Unit,
     onPickFile: () -> Unit,
     onPaste: () -> Unit,
@@ -243,6 +250,7 @@ internal fun DatasetScreen(
                         active = meta.id == activeId,
                         onSelect = { onSelect(meta) },
                         onEdit = { onEdit(meta) },
+                        onExport = { onExport(meta) },
                         onDelete = { onDelete(meta) }
                     )
                 }
@@ -285,6 +293,7 @@ internal fun DatasetEditScreen(
     name: String,
     entries: List<Entry>,
     onBack: () -> Unit,
+    onExport: () -> Unit,
     onToggle: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -310,6 +319,9 @@ internal fun DatasetEditScreen(
                         .clickable(onClick = onBack)
                         .padding(horizontal = 12.dp, vertical = 8.dp)
                 )
+                // 导出放在这一侧而不是靠右：右侧要留给「已标记 N」，
+                // 那个数是编辑时一直要看的，挤到边角反而不好找。
+                RowAction(text = "导出", color = Color.White.copy(alpha = 0.75f), onClick = onExport)
                 Text(
                     text = name,
                     color = Color.White,

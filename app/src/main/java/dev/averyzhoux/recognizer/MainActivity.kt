@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.util.LruCache
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -405,9 +406,79 @@ fun CameraOcrScreen() {
         }
     }
 
+    // ---------- 数据集：导出 ----------
+    //
+    // 默认落点固定为公共「下载/shijianxiangji」：
+    // Android 10+ 用 [DatasetExporter]（MediaStore）**直接写**，不弹任何界面、
+    // 不需要存储权限；写完 Toast 告知确切路径。
+    //
+    // ★ API 29 以下没有 MediaStore.Downloads 分卷，也没有免权限的公共目录写入，
+    //   所以退回系统「另存为」选择器（下面那个 launcher）。这条回退路径只影响
+    //   Android 9 及更老的机器，功能不丢，只是落点由用户自己选。
+    //
+    // SAF 分支为什么必须记住数据集 id：`CreateDocument` **只**能定文件名，
+    // 拿不到文件内容，内容只能在回调里现生成，所以 id 先留在内存里。
+    var pendingExportId by remember { mutableStateOf<Int?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        val id = pendingExportId
+        pendingExportId = null
+        if (uri == null || id == null) return@rememberLauncherForActivityResult
+
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val csv = datasetStore.exportCsv(id)
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(csv.toByteArray(Charsets.UTF_8))
+                    } ?: error("openOutputStream returned null")
+                }
+            }
+            result.onSuccess {
+                Toast.makeText(context, "已导出到所选位置", Toast.LENGTH_LONG).show()
+            }.onFailure { error ->
+                Log.e(TAG, "export dataset #$id failed", error)
+                Toast.makeText(context, "导出失败：${error.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /**
+     * 导出某个数据集。
+     *
+     * 两条路：能直接写就写进 `下载/shijianxiangji` 并提示路径；
+     * 否则走系统选择器。生成 CSV 和写盘都在 IO 线程。
+     */
+    val startExport: (DatasetMeta) -> Unit = { meta ->
+        val fileName = DatasetCsv.suggestFileName(meta.name)
+        if (!DatasetExporter.canWriteDirectly) {
+            pendingExportId = meta.id
+            exportLauncher.launch(fileName)
+        } else {
+            scope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        DatasetExporter.export(context, fileName, datasetStore.exportCsv(meta.id))
+                    }
+                }
+                result.onSuccess { exported ->
+                    Toast.makeText(
+                        context,
+                        "已导出到 ${DatasetExporter.humanPath}${exported.displayName}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }.onFailure { error ->
+                    Log.e(TAG, "export dataset '${meta.name}' failed", error)
+                    Toast.makeText(context, "导出失败：${error.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     // 当前识别管线。默认「小型图」：从 HAL 源头就出小图，省内存也省时间，日常扫标签够用
     var pipeline by remember { mutableStateOf(Pipeline.SmallCapture) }
-
     // 流式专用：相机一直在推帧，需要一个停下来的开关（见右下角那个圆钮）。
     // 进流式时默认就是暂停——先让人有机会调设置，再点「继续」开跑。
     var analysisPaused by remember { mutableStateOf(false) }
@@ -1070,6 +1141,7 @@ fun CameraOcrScreen() {
                     switchDataset(meta)
                 },
                 onEdit = openEditor,
+                onExport = startExport,
                 onDelete = { meta ->
                     scope.launch {
                         withContext(Dispatchers.IO) { datasetStore.delete(meta.id) }
@@ -1095,6 +1167,9 @@ fun CameraOcrScreen() {
                     editingEntries = emptyList()
                     screen = Screen.Datasets
                 },
+                // 编辑页导出的就是手上这一份（含刚改的标记）；标记不写进 CSV，
+                // 所以和列表页导出的内容一致，只是不用再翻回列表
+                onExport = { editingMeta?.let(startExport) },
                 onToggle = toggleMark,
                 modifier = Modifier.fillMaxSize()
             )

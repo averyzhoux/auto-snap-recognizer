@@ -81,3 +81,23 @@ internal val HitColor.checkMarkColor: Color
         HitColor.Green, HitColor.Yellow -> Color.Black
         HitColor.Blue -> Color.White
     }
+
+/**
+ * 命中行里「靠别名命中的那个写法」，形如 ` · Mfg`；不是别名命中就是空串。
+ *
+ * 用于在正式名后面补一句「实际是靠这个别名对上的」：
+ * - `matchedOn` 与正式名相同（忽略大小写）→ 不重复显示，返回 `""`
+ * - 未命中 / 没有 `matchedOn` → `""`
+ *
+ * ★ 忽略大小写比较：表格里写成 `manufacturer` 时，匹配命中记录的是这个原始写法，
+ *   但它在视觉上和 `Manufacturer` 是同一个词，再显示一遍只会让这一行变长。
+ *
+ * 取景页结果板、相册卡片、相册详情共用这一份，保证三处文案一致。
+ */
+internal fun LineMatch.matchedAliasText(): String {
+    val actual = matchedOn?.trim().orEmpty()
+    val name = entry?.name?.trim().orEmpty()
+    if (actual.isEmpty() || name.isEmpty()) return ""
+    if (actual.equals(name, ignoreCase = true)) return ""
+    return " · $actual"
+}

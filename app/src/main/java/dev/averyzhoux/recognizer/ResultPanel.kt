@@ -265,35 +265,48 @@ internal fun MatchRow(
             color = color ?: Color.White.copy(alpha = 0.35f),
             style = MaterialTheme.typography.bodyMedium
         )
-        // ★ 一行显示：识别文字和命中说明挤在同一行，不换行。
-        //   两段都给 weight(fill = false)：谁短就按需取宽，谁长就在**自己那份**里省略号，
-        //   不会出现「一段把另一段挤没」。两段加起来还放不下时各自收窄，仍然保持一行。
+        // ★ 两行：第一行是识别到的原文，第二行小字是命中的表格项（正式名）。
+        //   需求：正式名用一行小字显示，不再和原文挤同一行；不加箭头、不加括号。
+        //   「包含 / 近似 x%」这些说明接在正式名后面、用 ` · ` 分隔。
         //
-        //   外面再套一层 weight(1f) 的 Row，是为了把行尾的按钮**顶到最右**：
-        //   两段文字都是 fill = false、剩多少才占多少，不套这一层的话按钮会紧跟在
-        //   文字后面，每行的位置都不一样。
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.weight(1f)
-        ) {
+        //   两段都是 maxLines = 1 + 省略号，行高固定，不会因为长文本撑开。
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = match.rawText,
                 color = if (match.isHit) Color.White else Color.White.copy(alpha = 0.55f),
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
+                overflow = TextOverflow.Ellipsis
             )
             if (match.isHit) {
-                Text(
-                    text = "→ " + entry?.name + match.noteText(),
-                    color = color ?: XiaomiYellow,
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false)
-                )
+                // ★ 第二行的两段：
+                //   左：正式名（可压缩，空间不够就在自己那一段里省略号）
+                //   右：` · 别名 · 说明`（不给 weight，按自然宽度先测量，**优先保留**）
+                //   Row 先测非 weight 子项、剩下的才给 weight 子项，所以窄屏上
+                //   先保住别名和说明，正式名让位——这是需求指定的优先级。
+                val tail = match.matchedAliasText() + match.noteText()
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 1.dp)
+                ) {
+                    Text(
+                        text = entry?.name.orEmpty(),
+                        color = color ?: XiaomiYellow,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (tail.isNotEmpty()) {
+                        Text(
+                            text = tail,
+                            color = color ?: XiaomiYellow,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
         }
         // 行尾的确认标记。★ 它改的是**数据集里那一项**（[Entry.marked]），不是这一帧的
@@ -312,13 +325,15 @@ internal fun MatchRow(
  * 命中之后跟在表格项后面的那句说明。
  *
  * 用**命中种类**决定文案，不是用相似度：
- * - 包含 → `（包含）`。它现在是绿色、和「完全相同」长得一样，这句是唯一能看出
+ * - 包含 → ` · 包含`。它现在是绿色、和「完全相同」长得一样，这句是唯一能看出
  *   「为什么算命中」的线索
- * - 模糊 → `（近似 83%）`，这个数字是真编辑距离换算出来的相似度
+ * - 模糊 → ` · 近似 83%`，这个数字是真编辑距离换算出来的相似度
  * - 完全相同 → 不加说明，一眼就是对的
+ *
+ * ★ 不加括号：需求要求正式名用一行小字显示，括号只会让这一行更挤。
  */
 private fun LineMatch.noteText(): String = when (kind) {
-    MatchKind.Contains -> "（包含）"
-    MatchKind.Fuzzy -> "（近似 " + "%.0f%%".format(similarity * 100) + "）"
+    MatchKind.Contains -> " · 包含"
+    MatchKind.Fuzzy -> " · 近似 " + "%.0f%%".format(similarity * 100)
     MatchKind.Exact, MatchKind.None -> ""
 }

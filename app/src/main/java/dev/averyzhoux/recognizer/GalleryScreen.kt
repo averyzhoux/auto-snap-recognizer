@@ -164,6 +164,9 @@ internal fun HitDivider(modifier: Modifier = Modifier) {
  * 纵览卡片里的一行识别结果。
  *
  * [hit] 为 true 时用小米黄强调，并用 [note] 标出命中的是表格里的哪一项。
+ *
+ * ★ [note] 里已经带了 ` · ` 分隔（`正式名 · 别名`，见 [matchedAliasText]），
+ *   这里不再加箭头——取景页结果板也不用箭头，三处保持一致。
  */
 @Composable
 internal fun CardLine(text: String, color: Color? = null, note: String? = null) {
@@ -178,7 +181,7 @@ internal fun CardLine(text: String, color: Color? = null, note: String? = null) 
         )
         if (note != null) {
             Text(
-                text = "→ $note",
+                text = note,
                 color = (color ?: XiaomiYellow).copy(alpha = 0.75f),
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
@@ -256,7 +259,8 @@ internal fun GalleryCard(
                             CardLine(
                                 text = match.rawText,
                                 color = matchColor(match),
-                                note = match.entry?.name
+                                // 正式名 + 实际命中的别名（不是别名命中时只有正式名）
+                                note = match.entry?.let { it.name + match.matchedAliasText() }
                             )
                         }
                         HitDivider()

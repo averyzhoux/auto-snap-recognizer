@@ -98,6 +98,22 @@ class DatasetStore(context: Context) {
     }
 
     /**
+     * 导出某个数据集的**条目原文**（CSV 文本），给「导出」按钮用。
+     *
+     * 内容 = 名称 + 别名 + 「已识别」标记（行末 `marked=true/false` 列），
+     * 格式由 [DatasetCsv.encodeEntriesCsv] 定义。
+     *
+     * ★ 用的是 [entriesOf]，也就是 `list()` 里 `entryCount` 的**同一个来源** ——
+     *   用户看到「20 项」，导出来的文件就是 20 项。不能拿 `index.json` 里的
+     *   `entryCount` 去对，那是个缓存值，和磁盘上的 `entries.json` 可能已经对不上。
+     *
+     * ★ 内置数据集也走这条：它的条目在代码里（见 [builtInEntries]），标记在
+     *   `builtin.marks.json`，都能读到，所以内置的导出也带正确的标记。
+     *   读不到条目时 [entriesOf] 会回落到内置示例，所以导出不会给出一个空文件。
+     */
+    fun exportCsv(id: Int): String = DatasetCsv.encodeEntriesCsv(entriesOf(id))
+
+    /**
      * 内置示例数据集的条目：代码里的 [Dataset.entries] + 磁盘上存的「已识别」标记。
      *
      * ★ 内置的**条目本身**永远以代码为准，磁盘上只存标记（按名称），
@@ -117,6 +133,10 @@ class DatasetStore(context: Context) {
      *
      * [bytes] 是原始字节，这里负责探测编码再解析。
      * 成功返回新的元信息，失败返回 null。
+     *
+     * ★ 文件里带 `marked=true/false` 列时，标记会跟着条目一起落盘（本类写的
+     *   `entries.json` 本来就带 marked 字段），所以「导出 → 改 → 导回」能恢复
+     *   人工核对状态；旧文件没这一列，解析出来就是未标记。
      */
     fun importBytes(
         bytes: ByteArray,
@@ -223,7 +243,8 @@ class DatasetStore(context: Context) {
         // 原始副本
         csvFile(id).writeBytes(rawBytes)
 
-        // 解析后的条目（刚导入的都没标记）
+        // 解析后的条目。★ marked 来自文件里的标记列（没有就是 false），
+        //   不能再想当然写成「刚导入的都没标记」
         entriesFile(id).writeText(encodeEntries(parsed.entries).toString(), Charsets.UTF_8)
 
         val meta = DatasetMeta(
